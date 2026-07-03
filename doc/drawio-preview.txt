@@ -1,0 +1,92 @@
+*drawio-preview.txt*  Edit draw.io XML with a live browser preview
+
+Author:  sh05
+License: MIT
+
+==============================================================================
+CONTENTS                                                      *drawio-preview*
+
+  1. Introduction ................. |drawio-preview-intro|
+  2. Requirements ................. |drawio-preview-requirements|
+  3. Commands ..................... |drawio-preview-commands|
+  4. Configuration ................ |drawio-preview-configuration|
+  5. Limitations .................. |drawio-preview-limitations|
+
+==============================================================================
+1. INTRODUCTION                                         *drawio-preview-intro*
+
+drawio-preview.nvim lets you edit draw.io diagrams as plain mxGraph XML in
+Neovim, with a live preview rendered by an embedded draw.io editor in your
+browser. On |:w| both the `.drawio` source and a re-editable `.drawio.png`
+(PNG with the diagram XML embedded) are written.
+
+Data flow is strictly one-way: the Neovim buffer is the single source of
+truth. Nothing from the browser ever flows back into the buffer; only the
+exported PNG comes back, written to disk.
+
+==============================================================================
+2. REQUIREMENTS                                  *drawio-preview-requirements*
+
+- Neovim >= 0.10
+- A web browser
+- Internet access to `embed.diagrams.net`, or a self-hosted draw.io
+  instance for offline use (see |drawio-preview-configuration|)
+
+Run `:checkhealth drawio` to verify the setup.
+
+==============================================================================
+3. COMMANDS                                          *drawio-preview-commands*
+
+                                                              *:DrawioPreview*
+:DrawioPreview        Start the preview server for the current buffer and
+                      open the bridge page in a browser. The preview
+                      live-updates as you type (debounced).
+
+                                                               *:DrawioExport*
+:DrawioExport         Re-export `<name>.drawio.png` for the current buffer
+                      without saving. Requires a running preview.
+
+                                                                 *:DrawioStop*
+:DrawioStop           Stop the preview server and detach all buffers.
+
+==============================================================================
+4. CONFIGURATION                                *drawio-preview-configuration*
+
+Calling setup() is optional; defaults shown: >lua
+
+  require("drawio").setup({
+    -- Port for the preview server. 0 = pick a free port automatically.
+    port = 0,
+
+    -- draw.io editor origin. Point at a self-hosted instance
+    -- (e.g. "http://localhost:8080") for offline use.
+    drawio_url = "https://embed.diagrams.net",
+
+    -- Delay (ms) between the last buffer change and the preview update.
+    debounce_ms = 500,
+
+    -- Write <name>.drawio.png next to the file on :w.
+    export_on_write = true,
+
+    -- Scale factor for the exported PNG (2 = retina-ish).
+    export_scale = 2,
+
+    -- How long (ms) to wait for the browser to send back a rendered PNG.
+    export_timeout_ms = 30000,
+
+    -- nil = system default browser (vim.ui.open), or a list of args,
+    -- e.g. { "google-chrome", "--app" } for a chromeless app window.
+    browser = nil,
+  })
+<
+==============================================================================
+5. LIMITATIONS                                    *drawio-preview-limitations*
+
+- One preview per Neovim instance, shared by all attached buffers; the
+  browser shows whichever buffer changed last.
+- After |:DrawioStop| the browser page must be reopened via
+  |:DrawioPreview| (the port may change between runs).
+- Files not named `*.drawio` keep their extension in the exported name:
+  `foo.xml` exports to `foo.xml.drawio.png`.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

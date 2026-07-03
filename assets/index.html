@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>drawio-preview.nvim</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1e1e; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  #status {
+    position: fixed; left: 8px; bottom: 8px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #bbb;
+    background: rgba(30,30,30,.85); border-radius: 4px; padding: 2px 8px;
+    pointer-events: none; transition: opacity .4s; opacity: 0;
+  }
+</style>
+</head>
+<body>
+<iframe id="editor"
+        src="{{DRAWIO_URL}}/?embed=1&proto=json&chrome=0&spin=1"></iframe>
+<div id="status"></div>
+<script>
+(function () {
+  'use strict';
+  var frame = document.getElementById('editor');
+  // Pin messaging to the configured draw.io origin: never send the
+  // diagram to (or accept events from) anything else the iframe might
+  // get navigated to.
+  var drawioOrigin = new URL(frame.src).origin;
+  var statusEl = document.getElementById('status');
+  var ready = false;        // draw.io sent {event:'init'}
+  var lastXml = null;       // most recent XML from Neovim
+  var pendingExports = [];  // export requests queued before init
+
+  function flash(text, sticky) {
+    statusEl.textContent = text;
+    statusEl.style.opacity = '1';
+    clearTimeout(flash._t);
+    if (!sticky) {
+      flash._t = setTimeout(function () { statusEl.style.opacity = '0'; }, 1500);
+    }
+  }
+
+  function post(msg) {
+    frame.contentWindow.postMessage(JSON.stringify(msg), drawioOrigin);
+  }
+
+  function loadXml(xml) {
+    // Empty buffers would make the editor pop a dialog; show a blank page.
+    if (!xml || !xml.trim()) {
+      xml = '<mxGraphModel><root><mxCell id="0"/>' +
+            '<mxCell id="1" parent="0"/></root></mxGraphModel>';
+    }
+    post({ action: 'load', xml: xml });
+  }
+
+  // --- messages from the embedded draw.io editor -------------------------
+  window.addEventListener('message', function (e) {
+    if (e.origin !== drawioOrigin || e.source !== frame.contentWindow ||
+        typeof e.data !== 'string' || !e.data.length) {
+      return;
+    }
+    var msg;
+    try { msg = JSON.parse(e.data); } catch (_) { return; }
+
+    if (msg.event === 'init') {
+      ready = true;
+      if (lastXml !== null) loadXml(lastXml);
+      while (pendingExports.length) post(pendingExports.shift());
+    } else if (msg.event === 'export') {
+      // msg.data is a data URI ("data:image/png;base64,...").
+      // msg.message echoes back what we sent, including our token.
+      fetch('/export-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          png: msg.data,
+          token: msg.message && msg.message.token
+        })
+      }).then(function (res) {
+        flash(res.ok ? 'PNG exported' : 'export upload failed (' + res.status + ')');
+      }).catch(function () {
+        flash('export upload failed — is Neovim still running?');
+      });
+    }
+  });
+
+  // --- messages from Neovim (SSE) ----------------------------------------
+  var es = new EventSource('/events');
+  es.onopen = function () { flash('connected'); };
+  es.onerror = function () { flash('disconnected — retrying...'); };
+  es.onmessage = function (e) {
+    var m;
+    try { m = JSON.parse(e.data); } catch (_) { return; }
+
+    if (m.type === 'load') {
+      lastXml = m.xml;
+      if (ready) loadXml(m.xml);
+    } else if (m.type === 'export') {
+      var req = {
+        action: 'export',
+        format: 'xmlpng',
+        scale: m.scale || 1,
+        message: { token: m.token }
+      };
+      if (ready) post(req); else pendingExports.push(req);
+    } else if (m.type === 'bye') {
+      // Neovim stopped the preview; the port may differ next time, so
+      // retrying this EventSource would never succeed.
+      es.close();
+      flash('preview stopped — run :DrawioPreview again', true);
+    }
+  };
+})();
+</script>
+</body>
+</html>

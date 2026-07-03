@@ -1,0 +1,5 @@
+.DS_Store
+.claude/settings.local.json
+/test.drawio
+/test.drawio.png
+doc/tags

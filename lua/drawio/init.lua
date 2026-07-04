@@ -19,6 +19,7 @@ local state = {
   timer = nil,
   last_xml = nil,
   waiting_export = {}, -- token -> { path = source file, at = hrtime }
+  export_seq = 0,
 }
 
 -- ---------------------------------------------------------------------------
@@ -98,7 +99,12 @@ local function request_export(buf, srcfile)
   -- Make sure the editor has the latest buffer before rendering.
   push_now(buf)
 
-  local token = tostring(uv.hrtime())
+  -- Sequence for uniqueness within the session (tostring of a large
+  -- hrtime double rounds to 14 digits, so hrtime alone can collide on
+  -- long-running machines); hrtime so tokens from a stale browser page
+  -- of a previous session can never match.
+  state.export_seq = state.export_seq + 1
+  local token = state.export_seq .. "-" .. tostring(uv.hrtime())
   state.waiting_export[token] = { path = srcfile, at = uv.hrtime() }
   server.broadcast({
     type = "export",

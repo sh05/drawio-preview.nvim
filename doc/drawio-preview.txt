@@ -55,30 +55,36 @@ Run `:checkhealth drawio` to verify the setup.
 Calling setup() is optional; defaults shown: >lua
 
   require("drawio").setup({
-    -- Port for the preview server. 0 = pick a free port automatically.
+    -- Port for the preview server: an integer in 0..65535.
+    -- 0 = pick a free port automatically.
     port = 0,
 
-    -- draw.io editor origin. Point at a self-hosted instance
-    -- (e.g. "http://localhost:8080") for offline use.
+    -- draw.io editor origin; must start with http:// or https://.
+    -- Point at a self-hosted instance (e.g. "http://localhost:8080")
+    -- for offline use.
     drawio_url = "https://embed.diagrams.net",
 
-    -- Delay (ms) between the last buffer change and the preview update.
+    -- Delay (ms, >= 0) between the last buffer change and the preview update.
     debounce_ms = 500,
 
     -- Write <name>.drawio.png next to the file on :w.
     export_on_write = true,
 
-    -- Scale factor for the exported PNG (2 = retina-ish).
+    -- Scale factor (> 0) for the exported PNG (2 = retina-ish).
     export_scale = 2,
 
-    -- How long (ms) to wait for the browser to send back a rendered PNG.
+    -- How long (ms, > 0) to wait for the browser to send back a rendered PNG.
     export_timeout_ms = 30000,
 
-    -- nil = system default browser (vim.ui.open), or a list of args,
-    -- e.g. { "google-chrome", "--app" } for a chromeless app window.
+    -- nil = system default browser (vim.ui.open), or a non-empty list of
+    -- args, e.g. { "google-chrome", "--app" } for a chromeless app window.
     browser = nil,
   })
 <
+setup() rejects invalid values (wrong types, out-of-range numbers, a
+schemeless drawio_url, an empty browser list) immediately rather than
+letting them fail later in obscure ways.
+
 ==============================================================================
 5. LIMITATIONS                                    *drawio-preview-limitations*
 

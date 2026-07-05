@@ -263,13 +263,25 @@ function M.start(opts)
   M.on_sse_connect = opts.on_sse_connect
 
   M.server = uv.new_tcp()
+  -- A taken port fails at bind() on Linux but (SO_REUSEADDR) only at
+  -- listen() on macOS; check both so the conflict surfaces everywhere.
   local ok, err = pcall(M.server.bind, M.server, "127.0.0.1", opts.port or 0)
+  if ok then
+    local lok, lerr = M.server:listen(128, on_connection)
+    ok, err = lok == 0, lerr
+  end
   if not ok then
     M.server:close()
     M.server = nil
-    error("[drawio] failed to bind 127.0.0.1:" .. tostring(opts.port) .. " (" .. tostring(err) .. ")")
+    error(
+      "[drawio] failed to bind 127.0.0.1:"
+        .. tostring(opts.port)
+        .. " ("
+        .. tostring(err)
+        .. ") — pick another port or set port = 0",
+      0
+    )
   end
-  M.server:listen(128, on_connection)
   M.port = M.server:getsockname().port
   return M.port
 end

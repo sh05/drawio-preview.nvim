@@ -180,6 +180,21 @@ check(not server.is_running(), "stop() shuts the server down")
 r = curl({ base .. "/" })
 check(r and r.code ~= 200, "stopped server no longer accepts connections")
 
+-- A taken port must surface as a clean single-line error, not a stack trace.
+local uv = vim.uv or vim.loop
+local blocker = uv.new_tcp()
+blocker:bind("127.0.0.1", 0)
+local busy_port = blocker:getsockname().port
+blocker:listen(1, function() end)
+local sok, serr = pcall(server.start, { port = busy_port, html = HTML })
+check(
+  not sok and tostring(serr):find("failed to bind", 1, true) ~= nil,
+  "starting on a taken port raises a clean error",
+  tostring(serr)
+)
+check(not server.is_running(), "failed start leaves the server stopped")
+blocker:close()
+
 -- ---------------------------------------------------------------------------
 -- config.setup() validation
 -- ---------------------------------------------------------------------------
@@ -192,6 +207,20 @@ check(not pcall(config.setup, { port = "8080" }), "wrong option type is rejected
 
 ok = pcall(config.setup, {})
 check(ok and config.options.port == config.defaults.port, "empty setup keeps defaults")
+
+-- Value validation: types alone let broken configs pass setup() and fail
+-- much later in obscure ways (blank iframe, exec of the URL, bind errors).
+check(not pcall(config.setup, { drawio_url = "localhost:8080" }), "schemeless drawio_url is rejected")
+check(not pcall(config.setup, { drawio_url = 'https://x"y' }), "drawio_url with a quote is rejected")
+check(not pcall(config.setup, { browser = {} }), "empty browser list is rejected")
+check(not pcall(config.setup, { browser = { "chrome", 1 } }), "non-string browser entry is rejected")
+check(not pcall(config.setup, { debounce_ms = -1 }), "negative debounce_ms is rejected")
+check(not pcall(config.setup, { export_scale = 0 }), "zero export_scale is rejected")
+check(not pcall(config.setup, { export_timeout_ms = 0 }), "zero export_timeout_ms is rejected")
+check(not pcall(config.setup, { port = 99999 }), "out-of-range port is rejected")
+check(not pcall(config.setup, { port = 1.5 }), "non-integer port is rejected")
+check(pcall(config.setup, { port = 65535, debounce_ms = 0, browser = { "true" } }), "boundary values are accepted")
+config.setup({})
 
 print(("---\n%d checks, %d failures"):format(checks, failures))
 os.exit(failures > 0 and 1 or 0)

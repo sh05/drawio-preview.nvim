@@ -7,6 +7,7 @@
 ---   :w            -----------> SSE {type=export} --> editor renders xmlpng
 ---   bridge page  --POST /export-result--> Neovim writes <name>.drawio.png
 local config = require("drawio.config")
+local png = require("drawio.png")
 local server = require("drawio.server")
 
 local uv = vim.uv or vim.loop
@@ -89,14 +90,18 @@ end
 local function png_path_for(src)
   -- foo.drawio -> foo.drawio.png / foo.xml -> foo.xml.drawio.png
   -- (never strip the extension: foo.xml and foo.drawio in the same
-  -- directory must not fight over one PNG)
+  -- directory must not fight over one PNG). A buffer that *is* a
+  -- .drawio.png (opened via BufReadCmd) renders back onto itself.
+  if src:sub(-11) == ".drawio.png" then
+    return src
+  end
   if src:sub(-7) == ".drawio" then
     return src .. ".png"
   end
   return src .. ".drawio.png"
 end
 
-local function request_export(buf, srcfile)
+local function request_export(buf, srcfile, opts)
   if server.client_count() == 0 then
     vim.notify("[drawio] no preview connected; skipped PNG export (run :DrawioPreview)", vim.log.levels.WARN)
     return
@@ -116,7 +121,14 @@ local function request_export(buf, srcfile)
   -- of a previous session can never match.
   state.export_seq = state.export_seq + 1
   local token = state.export_seq .. "-" .. tostring(uv.hrtime())
-  state.waiting_export[token] = { path = srcfile, buf = buf, at = uv.hrtime() }
+  state.waiting_export[token] = {
+    path = srcfile,
+    buf = buf,
+    at = uv.hrtime(),
+    -- Set for .drawio.png buffers: their :w is only complete once the
+    -- rendered PNG is on disk.
+    clear_modified = opts and opts.clear_modified or nil,
+  }
   server.broadcast({
     type = "export",
     scale = config.options.export_scale,
@@ -176,6 +188,12 @@ local function on_export_result(body)
     return
   end
   vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
+
+  -- For .drawio.png buffers the rendered PNG *is* the file: only now is
+  -- their :w actually complete.
+  if waiting.clear_modified and vim.api.nvim_buf_is_valid(waiting.buf) then
+    vim.bo[waiting.buf].modified = false
+  end
 
   -- Exporting a non-followed buffer had to load its XML into the editor;
   -- now that the render is done, give the preview back to the followed
@@ -342,6 +360,48 @@ function M.export()
   end
   M.attach(buf)
   request_export(buf, file)
+end
+
+--- BufReadCmd for *.drawio.png: load the embedded diagram XML instead of
+--- the binary PNG bytes. From here on the buffer is the source of truth,
+--- exactly as for a plain .drawio buffer.
+function M.read_png(buf, path)
+  local lines = {}
+  local f = io.open(path, "rb")
+  if f then
+    local data = f:read("*a")
+    f:close()
+    local xml, err = png.extract_xml(data)
+    if not xml then
+      -- Lock the buffer: a :w from here would render an *empty* diagram
+      -- over a PNG we could not read, destroying its contents.
+      vim.bo[buf].modified = false
+      vim.bo[buf].modifiable = false
+      vim.bo[buf].readonly = true
+      vim.notify("[drawio] " .. vim.fn.fnamemodify(path, ":.") .. ": " .. err, vim.log.levels.ERROR)
+      return
+    end
+    lines = vim.split(xml, "\n", { plain = true })
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modified = false
+  vim.bo[buf].filetype = "drawio"
+end
+
+--- BufWriteCmd for *.drawio.png: the only way to produce a valid PNG is
+--- to render the XML, so :w goes through the normal export round trip.
+--- 'modified' stays set until the rendered PNG is actually on disk —
+--- clearing it optimistically could lose the XML to a failed export.
+function M.write_png(buf, path)
+  if not server.is_running() or server.client_count() == 0 then
+    vim.notify(
+      "[drawio] writing a .drawio.png needs a connected preview to render it — run :DrawioPreview, then :w again",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+  M.attach(buf)
+  request_export(buf, path, { clear_modified = true })
 end
 
 function M.stop()

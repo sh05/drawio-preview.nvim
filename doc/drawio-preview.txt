@@ -10,7 +10,8 @@ CONTENTS                                                      *drawio-preview*
   2. Requirements ................. |drawio-preview-requirements|
   3. Commands ..................... |drawio-preview-commands|
   4. Configuration ................ |drawio-preview-configuration|
-  5. Limitations .................. |drawio-preview-limitations|
+  5. Editing .drawio.png files .... |drawio-preview-png-editing|
+  6. Limitations .................. |drawio-preview-limitations|
 
 ==============================================================================
 1. INTRODUCTION                                         *drawio-preview-intro*
@@ -88,7 +89,20 @@ schemeless drawio_url, an empty browser list) immediately rather than
 letting them fail later in obscure ways.
 
 ==============================================================================
-5. LIMITATIONS                                    *drawio-preview-limitations*
+5. EDITING .drawio.png FILES                      *drawio-preview-png-editing*
+
+Opening a `.drawio.png` written by this plugin (or any draw.io "editable
+PNG" whose XML is stored uncompressed) loads the embedded diagram XML into
+the buffer instead of binary bytes. Edit it like any `.drawio` buffer.
+
+|:w| renders a fresh PNG through the running preview and replaces the file
+in place, so saving needs |:DrawioPreview| connected; the buffer keeps its
+'modified' flag until the rendered PNG is actually on disk. PNGs whose XML
+is compressed (zTXt) or missing open non-modifiable so a save cannot
+destroy them.
+
+==============================================================================
+6. LIMITATIONS                                    *drawio-preview-limitations*
 
 - One preview per Neovim instance, pinned to one buffer at a time:
   |:DrawioPreview| (re)pins it to the current buffer, and only the pinned

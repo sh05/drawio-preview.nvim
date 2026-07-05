@@ -141,9 +141,19 @@ buffered, and connections that stop making progress are closed after 30 s.
 - Files not named `*.drawio` keep their extension in the export:
   `foo.xml` exports to `foo.xml.drawio.png`.
 
+## Editing `.drawio.png` files directly
+
+Opening a `.drawio.png` written by this plugin (or any draw.io "editable
+PNG" that stores its XML uncompressed) loads the embedded diagram XML into
+the buffer instead of binary bytes. Edit it like any `.drawio` buffer;
+`:w` renders a fresh PNG through the running preview and replaces the file
+in place — so saving needs `:DrawioPreview` connected, and the buffer keeps
+its `modified` flag until the rendered PNG is actually on disk. PNGs whose
+XML is compressed (`zTXt`) or missing open locked (non-modifiable) so a
+save cannot destroy them.
+
 ## Roadmap
 
-- Open existing `.drawio.png` files directly (extract embedded XML on read)
 - `:DrawioLayout` — apply draw.io auto-layouts (tree/flow/organic/…) to the buffer
 - CSV / Mermaid sources with automatic layout
 

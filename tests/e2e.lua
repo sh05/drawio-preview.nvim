@@ -99,13 +99,31 @@ local port = child_lua([[return require("drawio.server").port]])
 check(type(port) == "number" and port > 0, ":DrawioPreview starts the server")
 
 local base = "http://127.0.0.1:" .. port
+local token = child_lua([[return require("drawio.server").token]])
+check(type(token) == "string" and #token == 32, "the preview session has an auth token")
+local auth = "?t=" .. token
 
 -- ---------------------------------------------------------------------------
 -- SSE stream: the test plays the bridge page from here on
 -- ---------------------------------------------------------------------------
 
+-- A client without the token must be locked out of the SSE stream.
+local status_done, status_res = false, nil
+vim.system(
+  { "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", base .. "/events" },
+  { text = true },
+  function(res)
+    status_res = res
+    status_done = true
+  end
+)
+wait_for(function()
+  return status_done
+end)
+check(status_res and tonumber(status_res.stdout) == 403, "SSE without the token is rejected")
+
 local sse_file = tmp .. "/sse.log"
-local sse_proc = vim.system({ "curl", "-sN", "-o", sse_file, "--max-time", "120", base .. "/events" })
+local sse_proc = vim.system({ "curl", "-sN", "-o", sse_file, "--max-time", "120", base .. "/events" .. auth })
 
 local function sse_messages()
   local text = read_file(sse_file)
@@ -231,7 +249,7 @@ local function post_export_result(png_bytes, token)
     "Origin: " .. base,
     "--data-binary",
     "@" .. body_file,
-    base .. "/export-result",
+    base .. "/export-result" .. auth,
   }, { text = true }, function(r)
     res = r
     done = true

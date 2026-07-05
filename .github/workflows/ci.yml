@@ -9,17 +9,46 @@ jobs:
   stylua:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: JohnnyMorganz/stylua-action@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          version: latest
-          args: --check .
+      - uses: actions/checkout@v5
+      # stylua-action still runs on Node 20; use the release binary directly.
+      # Pinned: a new StyLua release can change formatting output and would
+      # otherwise fail CI on untouched code.
+      - name: Install stylua
+        run: |
+          curl -fsSL -o /tmp/stylua.zip \
+            https://github.com/JohnnyMorganz/StyLua/releases/download/v2.5.2/stylua-linux-x86_64.zip
+          unzip -o -d "$RUNNER_TEMP/stylua-bin" /tmp/stylua.zip
+          chmod +x "$RUNNER_TEMP/stylua-bin/stylua"
+          echo "$RUNNER_TEMP/stylua-bin" >> "$GITHUB_PATH"
+      - run: stylua --check .
 
   luacheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: lunarmodules/luacheck@v1
         with:
-          args: lua plugin ftplugin ftdetect
+          args: lua plugin ftplugin ftdetect tests
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # v0.10.4 = oldest supported release (README: Neovim >= 0.10, and
+        # the first tag shipping the renamed nvim-linux-x86_64 asset);
+        # stable = whatever users install today.
+        neovim: [v0.10.4, stable]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Neovim (${{ matrix.neovim }})
+        run: |
+          curl -fsSL -o /tmp/nvim.tar.gz \
+            "https://github.com/neovim/neovim/releases/download/${{ matrix.neovim }}/nvim-linux-x86_64.tar.gz"
+          tar -C "$RUNNER_TEMP" -xzf /tmp/nvim.tar.gz
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - run: nvim --version
+      - name: Smoke test (server routes, validation, SSE, config)
+        run: nvim --clean -l tests/smoke.lua
+      - name: E2E test (bridge-page round trip against a real Neovim)
+        run: nvim --clean -l tests/e2e.lua

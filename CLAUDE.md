@@ -4,11 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A pure-Lua Neovim plugin (Neovim >= 0.10) for editing draw.io diagrams as XML with a live browser preview. On `:w` it writes both the `.drawio` source and a re-editable `.drawio.png` (PNG with embedded XML). There is no build step, no test suite, and no external dependencies — rendering happens inside an embedded draw.io editor in the browser, not via any CLI or headless browser.
+A pure-Lua Neovim plugin (Neovim >= 0.10) for editing draw.io diagrams as XML with a live browser preview. On `:w` it writes both the `.drawio` source and a re-editable `.drawio.png` (PNG with embedded XML). There is no build step and no external dependencies — rendering happens inside an embedded draw.io editor in the browser, not via any CLI or headless browser.
 
-## Development / manual testing
+## Development / testing
 
-There are no automated tests. Verify changes by loading the plugin from the working tree:
+Two headless test scripts (no framework; non-zero exit on failure) live in `tests/`:
+
+```sh
+nvim --clean -l tests/smoke.lua   # server routes, Host/Origin validation, SSE, config
+nvim --clean -l tests/e2e.lua    # curl plays the bridge page against a child Neovim
+```
+
+Both must pass before committing; CI runs them too. When adding waits, poll with `vim.wait` — `vim.system():wait()` only pumps fast events, so the scheduled request handler deadlocks otherwise.
+
+For browser-facing changes, also verify manually by loading the plugin from the working tree:
 
 ```sh
 nvim --clean --cmd "set rtp+=$(pwd)" test.drawio
@@ -16,7 +25,7 @@ nvim --clean --cmd "set rtp+=$(pwd)" test.drawio
 
 Then `:DrawioPreview` (opens browser, live-updates on typing), `:w` (should write `test.drawio.png`), `:DrawioExport`, `:DrawioStop`, and `:checkhealth drawio` to exercise the full surface.
 
-Lint before committing (CI runs both): `stylua --check .` and `luacheck lua plugin ftplugin ftdetect`.
+Lint before committing (CI runs both): `stylua --check .` and `luacheck lua plugin ftplugin ftdetect tests`.
 
 ## Architecture
 

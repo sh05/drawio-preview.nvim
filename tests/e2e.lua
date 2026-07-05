@@ -63,9 +63,8 @@ f:close()
 -- "nvim" happens to be first in $PATH. The watchdog makes the child
 -- reap itself if this process dies mid-run (a thrown error would
 -- otherwise orphan a listening headless Neovim forever).
-local watchdog = ("lua do local p = %d; local t = vim.uv.new_timer(); t:start(2000, 2000, function() if not vim.uv.kill(p, 0) then os.exit(1) end end) end"):format(
-  vim.uv.os_getpid()
-)
+local watchdog = ("lua do local p = %d; local t = vim.uv.new_timer(); "):format(vim.uv.os_getpid())
+  .. "t:start(2000, 2000, function() if not vim.uv.kill(p, 0) then os.exit(1) end end) end"
 local child = vim.system({
   vim.v.progpath,
   "--clean",

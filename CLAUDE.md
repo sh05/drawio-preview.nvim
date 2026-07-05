@@ -35,6 +35,8 @@ Data flow is strictly one-way — the Neovim buffer is the single source of trut
 buffer change --debounce--> SSE {type=load}   --> bridge page --> postMessage --> draw.io iframe
 :w / :DrawioExport ------> SSE {type=export}  --> iframe renders xmlpng
 bridge page --POST /export-result (base64 PNG + token)--> Neovim writes <name>.drawio.png
+:DrawioLayout ----------> SSE {type=layout}   --> iframe runs the layout + exports xml
+bridge page --POST /layout-result (XML + token)--> Neovim rewrites the buffer (sole exception)
 ```
 
 The three moving parts:
@@ -48,6 +50,6 @@ Entry points: `ftdetect/drawio.lua` registers the `drawio` filetype **and** the 
 ## Conventions and constraints
 
 - Requires Neovim 0.10 APIs: `vim.base64`, `vim.system`, `vim.ui.open`, `vim.uv`. Use `vim.uv or vim.loop` for the uv handle.
-- Never mutate the user's buffer — one-way data flow is a core design guarantee stated in the README.
+- Never mutate the user's buffer — one-way data flow is a core design guarantee stated in the README. The single sanctioned exception is `:DrawioLayout` (explicit user command; applies the laid-out XML in one `nvim_buf_set_lines` call so it stays a single undo step). Nothing may write to the buffer automatically.
 - The export token round-trip (init.lua `request_export` → index.html `message.token` → `on_export_result`) is what matches a PNG response to its source file; keep it intact when touching export code.
 - Config changes must be reflected in three places: `config.lua` defaults (with comments), the README "Configuration" section, and `health.lua` if checkable.

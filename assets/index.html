@@ -57,6 +57,25 @@
     post({ action: 'load', xml: xml });
   }
 
+  // The editor's XML export is an <mxfile> document. When the buffer holds
+  // a bare <mxGraphModel>, unwrap it again so :DrawioLayout hands back the
+  // same document type it was given. Returns null when the diagram payload
+  // is not plain XML (e.g. compressed), which Neovim reports to the user.
+  function unwrapForBuffer(xmlStr) {
+    var wantModel = /^\s*<mxGraphModel/i.test(lastXml || '');
+    try {
+      var doc = new DOMParser().parseFromString(xmlStr, 'text/xml');
+      var root = doc.documentElement;
+      if (!root || root.nodeName === 'parsererror') return null;
+      if (!wantModel) return xmlStr;
+      if (root.nodeName === 'mxGraphModel') return xmlStr;
+      var model = root.getElementsByTagName('mxGraphModel')[0];
+      return model ? new XMLSerializer().serializeToString(model) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // --- messages from the embedded draw.io editor -------------------------
   window.addEventListener('message', function (e) {
     if (e.origin !== drawioOrigin || e.source !== frame.contentWindow ||
@@ -71,8 +90,29 @@
       if (lastXml !== null) loadXml(lastXml);
       while (pendingExports.length) post(pendingExports.shift());
     } else if (msg.event === 'export') {
-      // msg.data is a data URI ("data:image/png;base64,...").
       // msg.message echoes back what we sent, including our token.
+      if (msg.message && msg.message.kind === 'layout') {
+        // XML export requested by :DrawioLayout; hand the laid-out
+        // document back to Neovim.
+        var xml = unwrapForBuffer(msg.xml || '');
+        fetch('/layout-result' + auth, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(xml === null ? {
+            error: 'unrecognized or compressed XML export',
+            token: msg.message.token
+          } : {
+            xml: xml,
+            token: msg.message.token
+          })
+        }).then(function (res) {
+          flash(res.ok ? 'layout applied' : 'layout upload failed (' + res.status + ')');
+        }).catch(function () {
+          flash('layout upload failed — is Neovim still running?');
+        });
+        return;
+      }
+      // msg.data is a data URI ("data:image/png;base64,...").
       fetch('/export-result' + auth, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -107,6 +147,15 @@
         message: { token: m.token }
       };
       if (ready) post(req); else pendingExports.push(req);
+    } else if (m.type === 'layout') {
+      // Run the layout, then export the result as XML; the export event
+      // above routes it back through /layout-result via message.kind.
+      var reqs = [
+        { action: 'layout', layouts: [{ layout: m.layout }] },
+        { action: 'export', format: 'xml',
+          message: { token: m.token, kind: 'layout' } }
+      ];
+      if (ready) reqs.forEach(post); else pendingExports.push.apply(pendingExports, reqs);
     } else if (m.type === 'bye') {
       // Neovim stopped the preview; the port may differ next time, so
       // retrying this EventSource would never succeed.

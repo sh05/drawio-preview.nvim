@@ -6,6 +6,8 @@
 ---   buffer change --debounce--> SSE {type=load}  --> embedded draw.io editor
 ---   :w            -----------> SSE {type=export} --> editor renders xmlpng
 ---   bridge page  --POST /export-result--> Neovim writes <name>.drawio.png
+---   :DrawioLayout ----------> SSE {type=layout} --> editor lays out + exports xml
+---   bridge page  --POST /layout-result--> buffer rewritten (sole exception)
 local config = require("drawio.config")
 local png = require("drawio.png")
 local server = require("drawio.server")
@@ -21,6 +23,7 @@ local state = {
   timer = nil,
   last_xml = nil,
   waiting_export = {}, -- token -> { path = source file, buf = bufnr, at = hrtime }
+  waiting_layout = {}, -- token -> { buf = bufnr, name = layout name }
   export_seq = 0,
 }
 
@@ -203,9 +206,45 @@ local function on_export_result(body)
   end
 end
 
+--- Called by the server when the bridge page POSTs laid-out XML back.
+local function on_layout_result(body)
+  local ok, data = pcall(vim.json.decode, body)
+  if not ok or type(data) ~= "table" then
+    vim.notify("[drawio] malformed layout result", vim.log.levels.ERROR)
+    return
+  end
+  local waiting = data.token and state.waiting_layout[data.token]
+  if not waiting then
+    return -- stale or unknown token
+  end
+  state.waiting_layout[data.token] = nil
+
+  if type(data.xml) ~= "string" then
+    vim.notify(
+      "[drawio] layout produced XML the bridge could not unwrap"
+        .. (type(data.error) == "string" and (" (" .. data.error .. ")") or ""),
+      vim.log.levels.WARN
+    )
+    return
+  end
+  local buf = waiting.buf
+  if not vim.api.nvim_buf_is_valid(buf) or not vim.bo[buf].modifiable then
+    vim.notify("[drawio] buffer went away; layout not applied", vim.log.levels.WARN)
+    return
+  end
+  -- The one deliberate exception to the one-way data flow: an explicit
+  -- user command writing the laid-out XML back. A single set_lines call
+  -- keeps it undoable in one step.
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(data.xml, "\n", { plain = true }))
+  state.last_xml = data.xml -- the editor already shows exactly this
+  vim.notify("[drawio] applied " .. waiting.name .. " layout")
+end
+
 local function on_post(path, body)
   if path == "/export-result" then
     on_export_result(body)
+  elseif path == "/layout-result" then
+    on_layout_result(body)
   end
 end
 
@@ -362,6 +401,48 @@ function M.export()
   request_export(buf, file)
 end
 
+local LAYOUTS = {
+  tree = "mxCompactTreeLayout",
+  flow = "mxHierarchicalLayout",
+  organic = "mxFastOrganicLayout",
+  circle = "mxCircleLayout",
+}
+
+--- :DrawioLayout — run one of draw.io's auto-layouts on the buffer.
+--- This is the one feature that intentionally writes to the buffer; it is
+--- only ever triggered by this explicit command, never automatically.
+function M.layout(name)
+  local class = LAYOUTS[name]
+  if not class then
+    vim.notify(
+      "[drawio] unknown layout " .. vim.inspect(name) .. " (tree | flow | organic | circle)",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+  local buf = vim.api.nvim_get_current_buf()
+  if not server.is_running() or server.client_count() == 0 then
+    vim.notify("[drawio] no preview connected; run :DrawioPreview first", vim.log.levels.WARN)
+    return
+  end
+  M.attach(buf)
+  -- The editor must hold exactly this buffer before laying it out.
+  if not push_now(buf) then
+    vim.notify("[drawio] buffer is not valid XML; cannot apply a layout", vim.log.levels.WARN)
+    return
+  end
+  state.export_seq = state.export_seq + 1
+  local token = state.export_seq .. "-" .. tostring(uv.hrtime())
+  state.waiting_layout[token] = { buf = buf, name = name }
+  server.broadcast({ type = "layout", layout = class, token = token })
+  vim.defer_fn(function()
+    if state.waiting_layout[token] then
+      state.waiting_layout[token] = nil
+      vim.notify("[drawio] layout request timed out", vim.log.levels.WARN)
+    end
+  end, config.options.export_timeout_ms)
+end
+
 --- BufReadCmd for *.drawio.png: load the embedded diagram XML instead of
 --- the binary PNG bytes. From here on the buffer is the source of truth,
 --- exactly as for a plain .drawio buffer.
@@ -422,6 +503,7 @@ function M.stop()
   state.attached = {}
   state.followed = nil
   state.waiting_export = {}
+  state.waiting_layout = {}
   server.broadcast({ type = "bye" }) -- lets open pages show "stopped" instead of retrying forever
   server.stop()
   vim.notify("[drawio] preview stopped")

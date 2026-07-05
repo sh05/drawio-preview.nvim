@@ -151,7 +151,7 @@ local function vet_request(req)
   if req.method == "GET" and (req.path == "/" or req.path == "/index.html" or req.path == "/events") then
     return nil, 0
   end
-  if req.method == "POST" and req.path == "/export-result" then
+  if req.method == "POST" and (req.path == "/export-result" or req.path == "/layout-result") then
     if not origin_allowed(req.origin) then
       return "403 Forbidden"
     end
@@ -193,7 +193,7 @@ local function handle_request(client, req)
     if M.on_sse_connect then
       M.on_sse_connect(client)
     end
-  elseif req.method == "POST" and req.path == "/export-result" then
+  elseif req.method == "POST" and (req.path == "/export-result" or req.path == "/layout-result") then
     if M.on_post then
       M.on_post(req.path, req.body)
     end

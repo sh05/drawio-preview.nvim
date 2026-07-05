@@ -6,7 +6,9 @@ re-editable `.drawio.png` (PNG with the diagram XML embedded) are written.
 
 Your XML buffer is the single source of truth — markdown-preview style. The
 browser only renders; nothing ever flows back into your buffer, so your
-hand-written formatting is never touched.
+hand-written formatting is never touched. (The one exception is the explicit
+`:DrawioLayout` command, which rewrites the buffer on request — undoable in
+a single step.)
 
 > This is an unofficial project and is not affiliated with JGraph /
 > diagrams.net. "draw.io" is a trademark of its respective owner.
@@ -54,11 +56,18 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 Commands:
 
-| Command          | Description                                    |
-| ---------------- | ---------------------------------------------- |
-| `:DrawioPreview` | Start the preview for the current buffer       |
-| `:DrawioExport`  | Re-export `<name>.drawio.png` without saving   |
-| `:DrawioStop`    | Stop the preview server                        |
+| Command                 | Description                                            |
+| ----------------------- | ------------------------------------------------------ |
+| `:DrawioPreview`        | Start the preview for the current buffer               |
+| `:DrawioExport`         | Re-export `<name>.drawio.png` without saving           |
+| `:DrawioStop`           | Stop the preview server                                |
+| `:DrawioLayout {name}`  | Apply a draw.io auto-layout to the buffer (see below)  |
+
+`:DrawioLayout` accepts `tree`, `flow`, `organic`, or `circle` and runs the
+corresponding draw.io auto-layout on the diagram, **rewriting the buffer**
+with the laid-out XML — the single deliberate exception to the one-way data
+flow. It only ever runs on this explicit command, and the change is one
+`u` away from being undone. Requires a connected preview.
 
 ### Minimal `.drawio` to get started
 
@@ -154,7 +163,6 @@ save cannot destroy them.
 
 ## Roadmap
 
-- `:DrawioLayout` — apply draw.io auto-layouts (tree/flow/organic/…) to the buffer
 - CSV / Mermaid sources with automatic layout
 
 ## License

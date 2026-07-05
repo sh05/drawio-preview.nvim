@@ -224,12 +224,11 @@ check(
   "export request carries scale and token"
 )
 
---- POST a fake rendered PNG back, the way the bridge page does.
-local function post_export_result(png_bytes, token)
-  local body = vim.json.encode({ png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = token })
+--- POST a JSON body the way the bridge page does. Returns the HTTP status.
+local function post_json(path, tbl)
   local body_file = tmp .. "/post-body.json"
   local bf = assert(io.open(body_file, "wb"))
-  bf:write(body)
+  bf:write(vim.json.encode(tbl))
   bf:close()
   local done, res = false, nil
   vim.system({
@@ -249,7 +248,7 @@ local function post_export_result(png_bytes, token)
     "Origin: " .. base,
     "--data-binary",
     "@" .. body_file,
-    base .. "/export-result" .. auth,
+    base .. path .. auth,
   }, { text = true }, function(r)
     res = r
     done = true
@@ -258,6 +257,11 @@ local function post_export_result(png_bytes, token)
     return done
   end)
   return res and tonumber(res.stdout) or 0
+end
+
+--- POST a fake rendered PNG back, the way the bridge page does.
+local function post_export_result(png_bytes, token)
+  return post_json("/export-result", { png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = token })
 end
 
 local png1 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-1\0\1\2", 64)
@@ -451,6 +455,71 @@ check(child_lua([[return vim.bo.modifiable]]) == false, "a PNG without embedded 
 
 -- Back to the followed buffer for the remaining checks.
 child_cmd("buffer " .. buf1)
+
+-- ---------------------------------------------------------------------------
+-- :DrawioLayout — the one deliberate buffer write, undoable in one step
+-- ---------------------------------------------------------------------------
+
+local function layout_msgs()
+  local msgs = {}
+  for _, m in ipairs(sse_messages()) do
+    if m.type == "layout" then
+      msgs[#msgs + 1] = m
+    end
+  end
+  return msgs
+end
+
+-- An unknown layout name is refused before anything is sent.
+pcall(child_cmd, "DrawioLayout diagonal") -- the ERROR notify propagates through RPC
+vim.wait(200)
+check(#layout_msgs() == 0, "unknown layout name is refused")
+
+local pre_layout_xml = child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+child_cmd("DrawioLayout tree")
+check(
+  wait_for(function()
+    return #layout_msgs() == 1
+  end),
+  ":DrawioLayout broadcasts a layout request"
+)
+local layout_msg = layout_msgs()[1]
+check(
+  layout_msg.layout == "mxCompactTreeLayout" and type(layout_msg.token) == "string",
+  "layout request carries the mapped layout class and a token"
+)
+
+-- The bridge answers with laid-out XML; Neovim writes it to the buffer.
+local laid_out = '<mxGraphModel><root><mxCell id="0"/></root><!-- LAID-OUT --></mxGraphModel>'
+check(post_json("/layout-result", { xml = laid_out, token = layout_msg.token }) == 200, "bridge can POST laid-out XML")
+check(
+  wait_for(function()
+    return child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == laid_out
+  end),
+  "laid-out XML replaces the buffer content"
+)
+
+-- One undo step restores the pre-layout XML (the write must be atomic).
+child_cmd("normal! u")
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
+  "the layout is undoable in a single step"
+)
+
+-- A bridge-side failure (compressed/unrecognized XML) leaves the buffer alone.
+child_cmd("DrawioLayout circle")
+check(
+  wait_for(function()
+    return #layout_msgs() == 2
+  end),
+  "a second layout request goes out"
+)
+post_json("/layout-result", { error = "unrecognized or compressed XML export", token = layout_msgs()[2].token })
+vim.wait(300)
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
+  "a failed layout leaves the buffer untouched"
+)
 
 -- ---------------------------------------------------------------------------
 -- non-XML buffer: the export must be skipped, never rendered stale

@@ -33,6 +33,8 @@ Data flow is strictly one-way — the Neovim buffer is the single source of trut
 
 ```
 buffer change --debounce--> SSE {type=load}   --> bridge page --> postMessage --> draw.io iframe
+  (load carries {xml=...} for XML buffers, {format="csv"|"mermaid", data=...} for text sources,
+   which the bridge forwards as a draw.io load descriptor)
 :w / :DrawioExport ------> SSE {type=export}  --> iframe renders xmlpng
 bridge page --POST /export-result (base64 PNG + token)--> Neovim writes <name>.drawio.png
 :DrawioLayout ----------> SSE {type=layout}   --> iframe runs the layout + exports xml

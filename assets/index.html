@@ -32,7 +32,7 @@
   var auth = '?t=' + encodeURIComponent(token);
   var statusEl = document.getElementById('status');
   var ready = false;        // draw.io sent {event:'init'}
-  var lastXml = null;       // most recent XML from Neovim
+  var lastLoad = null;      // most recent load message from Neovim
   var pendingExports = [];  // export requests queued before init
 
   function flash(text, sticky) {
@@ -48,7 +48,14 @@
     frame.contentWindow.postMessage(JSON.stringify(msg), drawioOrigin);
   }
 
-  function loadXml(xml) {
+  function applyLoad(m) {
+    // CSV / Mermaid sources are converted by draw.io itself via the
+    // format descriptor; everything else is loaded as XML.
+    if (m.format && m.data && m.data.trim()) {
+      post({ action: 'load', descriptor: { format: m.format, data: m.data } });
+      return;
+    }
+    var xml = m.xml;
     // Empty buffers would make the editor pop a dialog; show a blank page.
     if (!xml || !xml.trim()) {
       xml = '<mxGraphModel><root><mxCell id="0"/>' +
@@ -62,7 +69,7 @@
   // same document type it was given. Returns null when the diagram payload
   // is not plain XML (e.g. compressed), which Neovim reports to the user.
   function unwrapForBuffer(xmlStr) {
-    var wantModel = /^\s*<mxGraphModel/i.test(lastXml || '');
+    var wantModel = /^\s*<mxGraphModel/i.test((lastLoad && lastLoad.xml) || '');
     try {
       var doc = new DOMParser().parseFromString(xmlStr, 'text/xml');
       var root = doc.documentElement;
@@ -87,7 +94,7 @@
 
     if (msg.event === 'init') {
       ready = true;
-      if (lastXml !== null) loadXml(lastXml);
+      if (lastLoad !== null) applyLoad(lastLoad);
       while (pendingExports.length) post(pendingExports.shift());
     } else if (msg.event === 'export') {
       // msg.message echoes back what we sent, including our token.
@@ -137,8 +144,8 @@
     try { m = JSON.parse(e.data); } catch (_) { return; }
 
     if (m.type === 'load') {
-      lastXml = m.xml;
-      if (ready) loadXml(m.xml);
+      lastLoad = m;
+      if (ready) applyLoad(m);
     } else if (m.type === 'export') {
       var req = {
         action: 'export',

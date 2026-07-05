@@ -522,13 +522,89 @@ check(
 )
 
 -- ---------------------------------------------------------------------------
+-- CSV / Mermaid sources: pushed with a format descriptor, exports work
+-- ---------------------------------------------------------------------------
+
+local mermaid_src = "graph TD\n  A[Neovim] --> B[draw.io]"
+local mermaid_file = tmp .. "/test.mmd"
+local mf = assert(io.open(mermaid_file, "wb"))
+mf:write(mermaid_src .. "\n")
+mf:close()
+child_cmd("edit " .. mermaid_file)
+child_cmd("DrawioPreview") -- pins the preview to the mermaid buffer
+check(
+  wait_for(function()
+    return count_msgs(function(m)
+      return m.type == "load" and m.format == "mermaid" and m.data == mermaid_src
+    end) == 1
+  end),
+  "a .mmd buffer is pushed with a mermaid format descriptor"
+)
+
+-- Live updates carry the descriptor too.
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "graph LR", "  X --> Y" })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = 0 })
+]])
+check(
+  wait_for(function()
+    return count_msgs(function(m)
+      return m.type == "load" and m.format == "mermaid" and (m.data or ""):find("X --> Y", 1, true) ~= nil
+    end) == 1
+  end),
+  "mermaid edits live-update with the descriptor"
+)
+
+-- :DrawioLayout must refuse: its result is XML, not Mermaid.
+child_cmd("DrawioLayout tree")
+vim.wait(200)
+check(#layout_msgs() == 2, ":DrawioLayout refuses CSV/Mermaid sources")
+
+-- Exports go through the usual round trip, onto <name>.drawio.png.
+child_cmd("DrawioExport")
+check(
+  wait_for(function()
+    return #export_tokens() == 5
+  end),
+  ":DrawioExport works from a mermaid buffer"
+)
+local png5 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-5\12\13\14", 64)
+post_export_result(png5, export_tokens()[5])
+check(
+  wait_for(function()
+    return read_file(mermaid_file .. ".drawio.png") == png5
+  end),
+  "the mermaid buffer exports to <name>.drawio.png"
+)
+
+-- CSV sources get the csv descriptor.
+local csv_file = tmp .. "/test.csv"
+local cf = assert(io.open(csv_file, "wb"))
+cf:write("# label: %name%\nname\nalpha\n")
+cf:close()
+child_cmd("edit " .. csv_file)
+child_cmd("DrawioPreview")
+check(
+  wait_for(function()
+    return count_msgs(function(m)
+      return m.type == "load" and m.format == "csv" and (m.data or ""):find("alpha", 1, true) ~= nil
+    end) == 1
+  end),
+  "a .csv buffer is pushed with a csv format descriptor"
+)
+
+-- Back to the first buffer for the remaining checks.
+child_cmd("buffer " .. buf1)
+child_cmd("DrawioPreview")
+
+-- ---------------------------------------------------------------------------
 -- non-XML buffer: the export must be skipped, never rendered stale
 -- ---------------------------------------------------------------------------
 
 child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
 child_cmd("write")
 vim.wait(500)
-check(#export_tokens() == 4, "saving a non-XML buffer does not broadcast an export request")
+check(#export_tokens() == 5, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
 check(warn_messages:find("skipped PNG export", 1, true) ~= nil, "skipped export warns the user")

@@ -21,7 +21,7 @@ local state = {
   followed = nil, -- the one buffer whose edits drive the preview
   augroup = nil,
   timer = nil,
-  last_xml = nil,
+  last_load = nil, -- most recent load message ({xml=} or {format=,data=})
   waiting_export = {}, -- token -> { path = source file, buf = bufnr, at = hrtime }
   waiting_layout = {}, -- token -> { buf = bufnr, name = layout name }
   export_seq = 0,
@@ -60,19 +60,40 @@ local function looks_like_xml(text)
   return first == "<"
 end
 
+--- What kind of diagram source a buffer holds. CSV and Mermaid buffers are
+--- converted by draw.io itself (load action with a format descriptor);
+--- everything else is treated as mxGraph XML.
+local function source_format(buf)
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name:match("%.csv$") then
+    return "csv"
+  end
+  if name:match("%.mmd$") or name:match("%.mermaid$") then
+    return "mermaid"
+  end
+  return "xml"
+end
+
 --- Returns true when the buffer content was actually pushed; callers that
 --- are about to render (export) must not proceed on false, or the editor
---- would render whatever XML it had before.
+--- would render whatever content it had before.
 local function push_now(buf)
   if not vim.api.nvim_buf_is_valid(buf) then
     return false
   end
-  local xml = buffer_xml(buf)
-  if not looks_like_xml(xml) and xml:match("%S") then
-    return false -- non-empty but clearly not XML yet; wait for more typing
+  local text = buffer_xml(buf)
+  local format = source_format(buf)
+  local msg
+  if format == "xml" then
+    if not looks_like_xml(text) and text:match("%S") then
+      return false -- non-empty but clearly not XML yet; wait for more typing
+    end
+    msg = { type = "load", xml = text }
+  else
+    msg = { type = "load", format = format, data = text }
   end
-  state.last_xml = xml
-  server.broadcast({ type = "load", xml = xml })
+  state.last_load = msg
+  server.broadcast(msg)
   return true
 end
 
@@ -236,7 +257,7 @@ local function on_layout_result(body)
   -- user command writing the laid-out XML back. A single set_lines call
   -- keeps it undoable in one step.
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(data.xml, "\n", { plain = true }))
-  state.last_xml = data.xml -- the editor already shows exactly this
+  state.last_load = { type = "load", xml = data.xml } -- the editor already shows exactly this
   vim.notify("[drawio] applied " .. waiting.name .. " layout")
 end
 
@@ -248,10 +269,10 @@ local function on_post(path, body)
   end
 end
 
---- When the bridge page (re)connects, immediately feed it the current XML.
+--- When the bridge page (re)connects, immediately feed it the current content.
 local function on_sse_connect(client)
-  if state.last_xml ~= nil then
-    server.send(client, { type = "load", xml = state.last_xml })
+  if state.last_load ~= nil then
+    server.send(client, state.last_load)
   end
 end
 
@@ -421,6 +442,12 @@ function M.layout(name)
     return
   end
   local buf = vim.api.nvim_get_current_buf()
+  if source_format(buf) ~= "xml" then
+    -- The layout result is mxGraph XML; writing that into a CSV or Mermaid
+    -- buffer would destroy the source.
+    vim.notify("[drawio] :DrawioLayout is not available for CSV/Mermaid sources", vim.log.levels.WARN)
+    return
+  end
   if not server.is_running() or server.client_count() == 0 then
     vim.notify("[drawio] no preview connected; run :DrawioPreview first", vim.log.levels.WARN)
     return

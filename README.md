@@ -161,9 +161,17 @@ its `modified` flag until the rendered PNG is actually on disk. PNGs whose
 XML is compressed (`zTXt`) or missing open locked (non-modifiable) so a
 save cannot destroy them.
 
-## Roadmap
+## CSV / Mermaid sources
 
-- CSV / Mermaid sources with automatic layout
+`.csv` and `.mmd` / `.mermaid` buffers can be previewed and exported the same
+way: run `:DrawioPreview` in the buffer and draw.io converts the text
+on the fly (`:w` / `:DrawioExport` writes `<name>.drawio.png` next to it).
+
+- CSV uses draw.io's [insert-from-CSV format](https://www.drawio.com/blog/insert-from-csv)
+  (`# label:`, `# style:` … directives followed by the data rows).
+- Mermaid uses standard Mermaid syntax.
+- `:DrawioLayout` is unavailable for these buffers — its result is mxGraph
+  XML, which would destroy the text source.
 
 ## License
 

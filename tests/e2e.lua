@@ -297,13 +297,99 @@ check(
 )
 
 -- ---------------------------------------------------------------------------
+-- multi-buffer: the preview follows one buffer, exports work from any
+-- ---------------------------------------------------------------------------
+
+local buf1 = child_lua([[return vim.api.nvim_get_current_buf()]])
+
+local drawio_file2 = tmp .. "/other.drawio"
+local f2 = assert(io.open(drawio_file2, "wb"))
+f2:write('<mxGraphModel><root><mxCell id="0"/></root><!-- OTHER --></mxGraphModel>\n')
+f2:close()
+child_cmd("edit " .. drawio_file2)
+local buf2 = child_lua([[return vim.api.nvim_get_current_buf()]])
+
+-- A buffer the preview does not follow must not hijack the page on edit.
+child_lua(([[
+  vim.api.nvim_buf_set_lines(%d, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- OTHER-EDIT --></mxGraphModel>' })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
+]]):format(buf2, buf2))
+vim.wait(400)
+check(count_msgs(function(m)
+  return m.type == "load" and m.xml:find("OTHER-EDIT", 1, true) ~= nil
+end) == 0, "editing a non-followed buffer does not hijack the preview")
+
+-- :DrawioExport from the second buffer: it loads its XML, renders, and the
+-- preview is then given back to the followed buffer.
+child_cmd("DrawioExport")
+check(
+  wait_for(function()
+    return #export_tokens() == 3
+  end),
+  ":DrawioExport works from a non-followed buffer"
+)
+local function followed_loads()
+  return count_msgs(function(m)
+    return m.type == "load" and m.xml:find("<!-- B -->", 1, true) ~= nil
+  end)
+end
+local followed_loads_before = followed_loads()
+
+local png3 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-3\6\7\8", 64)
+post_export_result(png3, export_tokens()[3])
+check(
+  wait_for(function()
+    return read_file(drawio_file2 .. ".png") == png3
+  end),
+  "the non-followed buffer gets its own PNG"
+)
+check(
+  wait_for(function()
+    return followed_loads() == followed_loads_before + 1
+  end),
+  "after the export the preview returns to the followed buffer"
+)
+
+-- :DrawioPreview in the second buffer moves the pin there...
+child_cmd("DrawioPreview")
+child_lua(([[
+  vim.api.nvim_buf_set_lines(%d, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- OTHER-2 --></mxGraphModel>' })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
+]]):format(buf2, buf2))
+check(
+  wait_for(function()
+    return count_msgs(function(m)
+      return m.type == "load" and m.xml:find("OTHER-2", 1, true) ~= nil
+    end) == 1
+  end),
+  ":DrawioPreview re-pins the preview to the current buffer"
+)
+
+-- ...and the previously followed buffer stops pushing.
+child_lua(([[
+  vim.api.nvim_buf_set_lines(%d, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- A2 --></mxGraphModel>' })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
+]]):format(buf1, buf1))
+vim.wait(400)
+check(count_msgs(function(m)
+  return m.type == "load" and m.xml:find("A2", 1, true) ~= nil
+end) == 0, "the previously followed buffer no longer pushes")
+
+-- Back to the first buffer for the remaining checks.
+child_cmd("buffer " .. buf1)
+child_cmd("DrawioPreview")
+
+-- ---------------------------------------------------------------------------
 -- non-XML buffer: the export must be skipped, never rendered stale
 -- ---------------------------------------------------------------------------
 
 child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
 child_cmd("write")
 vim.wait(500)
-check(#export_tokens() == 2, "saving a non-XML buffer does not broadcast an export request")
+check(#export_tokens() == 3, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
 check(warn_messages:find("skipped PNG export", 1, true) ~= nil, "skipped export warns the user")

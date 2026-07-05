@@ -15,10 +15,11 @@ local M = {}
 
 local state = {
   attached = {}, -- bufnr -> true
+  followed = nil, -- the one buffer whose edits drive the preview
   augroup = nil,
   timer = nil,
   last_xml = nil,
-  waiting_export = {}, -- token -> { path = source file, at = hrtime }
+  waiting_export = {}, -- token -> { path = source file, buf = bufnr, at = hrtime }
   export_seq = 0,
 }
 
@@ -115,7 +116,7 @@ local function request_export(buf, srcfile)
   -- of a previous session can never match.
   state.export_seq = state.export_seq + 1
   local token = state.export_seq .. "-" .. tostring(uv.hrtime())
-  state.waiting_export[token] = { path = srcfile, at = uv.hrtime() }
+  state.waiting_export[token] = { path = srcfile, buf = buf, at = uv.hrtime() }
   server.broadcast({
     type = "export",
     scale = config.options.export_scale,
@@ -175,6 +176,13 @@ local function on_export_result(body)
     return
   end
   vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
+
+  -- Exporting a non-followed buffer had to load its XML into the editor;
+  -- now that the render is done, give the preview back to the followed
+  -- buffer.
+  if state.followed and state.followed ~= waiting.buf and vim.api.nvim_buf_is_valid(state.followed) then
+    push_now(state.followed)
+  end
 end
 
 local function on_post(path, body)
@@ -243,7 +251,11 @@ function M.attach(buf)
     group = state.augroup,
     buffer = buf,
     callback = function()
-      schedule_push(buf)
+      -- Only the followed buffer drives the preview; edits elsewhere must
+      -- neither hijack the page nor cancel the followed buffer's debounce.
+      if buf == state.followed then
+        schedule_push(buf)
+      end
     end,
   })
 
@@ -267,6 +279,9 @@ function M.attach(buf)
     buffer = buf,
     callback = function()
       state.attached[buf] = nil
+      if state.followed == buf then
+        state.followed = nil
+      end
     end,
   })
 end
@@ -300,6 +315,12 @@ function M.preview()
     )
   end
   M.attach(buf)
+  -- The preview is pinned to one buffer at a time; running :DrawioPreview
+  -- in another buffer moves the pin there.
+  if state.followed and state.followed ~= buf and vim.api.nvim_buf_is_valid(state.followed) then
+    vim.notify("[drawio] preview now follows " .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":."))
+  end
+  state.followed = buf
   push_now(buf) -- prime last_xml so a connecting page renders immediately
   -- The token in the URL is the only key to this server; the bridge page
   -- reads it from location.search and presents it on every request.
@@ -339,6 +360,7 @@ function M.stop()
     vim.api.nvim_clear_autocmds({ group = state.augroup })
   end
   state.attached = {}
+  state.followed = nil
   state.waiting_export = {}
   server.broadcast({ type = "bye" }) -- lets open pages show "stopped" instead of retrying forever
   server.stop()

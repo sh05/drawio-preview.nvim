@@ -131,8 +131,11 @@ buffered, and connections that stop making progress are closed after 30 s.
 
 ## Limitations
 
-- One preview per Neovim instance. All attached buffers share it, and the
-  browser shows whichever buffer changed last.
+- One preview per Neovim instance, pinned to one buffer at a time:
+  `:DrawioPreview` (re)pins it to the current buffer, and only the pinned
+  buffer live-updates the browser. `:w` exports still work from any attached
+  buffer — the preview briefly shows that buffer while it renders, then
+  returns to the pinned one.
 - After `:DrawioStop` the browser tab shows "preview stopped"; start again
   with `:DrawioPreview` (the page must be reopened — the port may change).
 - Files not named `*.drawio` keep their extension in the export:

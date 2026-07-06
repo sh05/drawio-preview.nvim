@@ -542,13 +542,13 @@ child_cmd("buffer " .. buf1)
 -- ---------------------------------------------------------------------------
 
 local function layout_msgs()
-  local msgs = {}
+  local found = {}
   for _, m in ipairs(sse_messages()) do
     if m.type == "layout" then
-      msgs[#msgs + 1] = m
+      found[#found + 1] = m
     end
   end
-  return msgs
+  return found
 end
 
 -- An unknown layout name is refused before anything is sent.

@@ -63,17 +63,22 @@ local function validate(options, opts)
   if options.drawio_url:match("[%s\"'<>\\]") then
     fail("drawio_url must not contain spaces or quote characters (got %q)", options.drawio_url)
   end
+  -- NaN would slip through the range comparisons below (NaN < 0 is false).
+  for _, key in ipairs({ "port", "debounce_ms", "export_scale", "export_timeout_ms" }) do
+    if options[key] ~= options[key] then
+      fail("%s must not be NaN", key)
+    end
+  end
   if options.port % 1 ~= 0 or options.port < 0 or options.port > 65535 then
     fail("port must be an integer in 0..65535 (got %s)", tostring(options.port))
   end
-  -- "not (x >= n)" instead of "x < n" so NaN is rejected too.
-  if not (options.debounce_ms >= 0) then
+  if options.debounce_ms < 0 then
     fail("debounce_ms must be >= 0 (got %s)", tostring(options.debounce_ms))
   end
-  if not (options.export_scale > 0) then
+  if options.export_scale <= 0 then
     fail("export_scale must be > 0 (got %s)", tostring(options.export_scale))
   end
-  if not (options.export_timeout_ms > 0) then
+  if options.export_timeout_ms <= 0 then
     fail("export_timeout_ms must be > 0 (got %s)", tostring(options.export_timeout_ms))
   end
   if opts.browser ~= nil then

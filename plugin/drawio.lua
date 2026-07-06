@@ -19,3 +19,15 @@ end, { desc = "Export the current buffer as <name>.drawio.png" })
 vim.api.nvim_create_user_command("DrawioStop", function()
   require("drawio").stop()
 end, { desc = "Stop the drawio preview server" })
+
+vim.api.nvim_create_user_command("DrawioLayout", function(cmd)
+  require("drawio").layout(cmd.args)
+end, {
+  nargs = 1,
+  complete = function(arg_lead)
+    return vim.tbl_filter(function(name)
+      return vim.startswith(name, arg_lead)
+    end, { "tree", "flow", "organic", "circle" })
+  end,
+  desc = "Apply a draw.io auto-layout to the buffer (rewrites the buffer, one undo step)",
+})

@@ -52,6 +52,14 @@ Run `:checkhealth drawio` to verify the setup.
                                                                  *:DrawioStop*
 :DrawioStop           Stop the preview server and detach all buffers.
 
+                                                               *:DrawioLayout*
+:DrawioLayout {name}  Run one of draw.io's auto-layouts on the diagram and
+                      write the laid-out XML back to the buffer. {name} is
+                      one of `tree`, `flow`, `organic`, `circle`. This is
+                      the single deliberate exception to the one-way data
+                      flow: it only runs on this explicit command and is
+                      undoable in one step. Requires a connected preview.
+
 ==============================================================================
 4. CONFIGURATION                                *drawio-preview-configuration*
 

@@ -570,8 +570,17 @@ check(
   "layout request carries the mapped layout class and a token"
 )
 
--- The bridge answers with laid-out XML; Neovim writes it to the buffer.
-local laid_out = '<mxGraphModel><root><mxCell id="0"/></root><!-- LAID-OUT --></mxGraphModel>'
+-- An unknown/stale token must be ignored outright.
+post_json("/layout-result", { xml = "<mxGraphModel><!-- FORGED --></mxGraphModel>", token = "not-a-layout-token" })
+vim.wait(300)
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
+  "an unknown layout token is ignored"
+)
+
+-- The bridge answers with laid-out XML (multi-line, as draw.io produces);
+-- Neovim writes it to the buffer.
+local laid_out = '<mxGraphModel>\n  <root><mxCell id="0"/></root><!-- LAID-OUT -->\n</mxGraphModel>'
 check(post_json("/layout-result", { xml = laid_out, token = layout_msg.token }) == 200, "bridge can POST laid-out XML")
 check(
   wait_for(function()
@@ -600,6 +609,23 @@ vim.wait(300)
 check(
   child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
   "a failed layout leaves the buffer untouched"
+)
+
+-- Keystrokes typed while a layout is in flight must win over the stale result.
+child_cmd("DrawioLayout organic")
+check(
+  wait_for(function()
+    return #layout_msgs() == 3
+  end),
+  "a third layout request goes out"
+)
+local mid_edit = '<mxGraphModel><root><mxCell id="0"/></root><!-- MID-LAYOUT-EDIT --></mxGraphModel>'
+child_lua(([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { %q })]]):format(mid_edit))
+post_json("/layout-result", { xml = laid_out, token = layout_msgs()[3].token })
+vim.wait(300)
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == mid_edit,
+  "a stale layout result does not overwrite newer edits"
 )
 
 -- ---------------------------------------------------------------------------

@@ -245,6 +245,9 @@ local function on_layout_result(body)
     return -- stale or unknown token
   end
   state.waiting_layout[data.token] = nil
+  -- However this ends, the layout loaded this buffer into the editor;
+  -- afterwards the preview belongs to the followed buffer again.
+  local buf = waiting.buf
 
   if type(data.xml) ~= "string" then
     vim.notify(
@@ -252,19 +255,31 @@ local function on_layout_result(body)
         .. (type(data.error) == "string" and (" (" .. data.error .. ")") or ""),
       vim.log.levels.WARN
     )
+    give_back_preview(buf)
     return
   end
-  local buf = waiting.buf
-  if not vim.api.nvim_buf_is_valid(buf) or not vim.bo[buf].modifiable then
-    vim.notify("[drawio] buffer went away; layout not applied", vim.log.levels.WARN)
+  -- :bd unloads a buffer but keeps it valid; set_lines on it would
+  -- "work" against a discarded undo history and be thrown away on the
+  -- next read from disk.
+  if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_buf_is_loaded(buf) or not vim.bo[buf].modifiable then
+    vim.notify("[drawio] buffer is gone or not modifiable; layout not applied", vim.log.levels.WARN)
+    give_back_preview(buf)
+    return
+  end
+  -- A stale layout must never win over keystrokes typed while it was in
+  -- flight (same changedtick pattern as clear_modified on exports).
+  if vim.api.nvim_buf_get_changedtick(buf) ~= waiting.tick then
+    vim.notify("[drawio] buffer changed while the layout was running; layout not applied", vim.log.levels.WARN)
+    give_back_preview(buf)
     return
   end
   -- The one deliberate exception to the one-way data flow: an explicit
   -- user command writing the laid-out XML back. A single set_lines call
   -- keeps it undoable in one step.
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(data.xml, "\n", { plain = true }))
-  state.last_xml = data.xml -- the editor already shows exactly this
+  state.last_xml = data.xml -- keeps SSE reconnect priming current
   vim.notify("[drawio] applied " .. waiting.name .. " layout")
+  give_back_preview(buf)
 end
 
 local function on_post(path, body)
@@ -460,12 +475,14 @@ function M.layout(name)
   end
   state.export_seq = state.export_seq + 1
   local token = state.export_seq .. "-" .. tostring(uv.hrtime())
-  state.waiting_layout[token] = { buf = buf, name = name }
+  -- The tick pins which revision the layout covers; see on_layout_result.
+  state.waiting_layout[token] = { buf = buf, name = name, tick = vim.api.nvim_buf_get_changedtick(buf) }
   server.broadcast({ type = "layout", layout = class, token = token })
   vim.defer_fn(function()
     if state.waiting_layout[token] then
       state.waiting_layout[token] = nil
       vim.notify("[drawio] layout request timed out", vim.log.levels.WARN)
+      give_back_preview(buf)
     end
   end, config.options.export_timeout_ms)
 end

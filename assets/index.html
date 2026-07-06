@@ -59,10 +59,12 @@
 
   // The editor's XML export is an <mxfile> document. When the buffer holds
   // a bare <mxGraphModel>, unwrap it again so :DrawioLayout hands back the
-  // same document type it was given. Returns null when the diagram payload
-  // is not plain XML (e.g. compressed), which Neovim reports to the user.
-  function unwrapForBuffer(xmlStr) {
-    var wantModel = /^\s*<mxGraphModel/i.test(lastXml || '');
+  // same document type it was given. wantModel is decided when the layout
+  // is *requested*, not when the export event arrives — by then another
+  // buffer's push may have rewritten lastXml. Returns null when the
+  // diagram payload is not plain XML (e.g. compressed), which Neovim
+  // reports to the user.
+  function unwrapForBuffer(xmlStr, wantModel) {
     try {
       var doc = new DOMParser().parseFromString(xmlStr, 'text/xml');
       var root = doc.documentElement;
@@ -94,7 +96,7 @@
       if (msg.message && msg.message.kind === 'layout') {
         // XML export requested by :DrawioLayout; hand the laid-out
         // document back to Neovim.
-        var xml = unwrapForBuffer(msg.xml || '');
+        var xml = unwrapForBuffer(msg.xml || '', msg.message.wantModel);
         fetch('/layout-result' + auth, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -150,10 +152,13 @@
     } else if (m.type === 'layout') {
       // Run the layout, then export the result as XML; the export event
       // above routes it back through /layout-result via message.kind.
+      // lastXml is the layout target here (Neovim pushes it right before
+      // this message), so the document type is captured now.
       var reqs = [
         { action: 'layout', layouts: [{ layout: m.layout }] },
         { action: 'export', format: 'xml',
-          message: { token: m.token, kind: 'layout' } }
+          message: { token: m.token, kind: 'layout',
+                     wantModel: /^\s*<mxGraphModel/i.test(lastXml || '') } }
       ];
       if (ready) reqs.forEach(post); else pendingExports.push.apply(pendingExports, reqs);
     } else if (m.type === 'bye') {

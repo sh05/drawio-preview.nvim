@@ -15,10 +15,11 @@ local M = {}
 
 local state = {
   attached = {}, -- bufnr -> true
+  followed = nil, -- the one buffer whose edits drive the preview
   augroup = nil,
   timer = nil,
   last_xml = nil,
-  waiting_export = {}, -- token -> { path = source file, at = hrtime }
+  waiting_export = {}, -- token -> { path = source file, buf = bufnr, at = hrtime }
   export_seq = 0,
 }
 
@@ -80,9 +81,22 @@ local function schedule_push(buf)
     config.options.debounce_ms,
     0,
     vim.schedule_wrap(function()
-      push_now(buf)
+      -- Re-check at fire time: the pin may have moved to another buffer
+      -- while this timer was pending, and a stale push would hijack it.
+      if buf == state.followed then
+        push_now(buf)
+      end
     end)
   )
+end
+
+--- Exporting a non-followed buffer had to load its XML into the editor;
+--- once that export finishes — successfully or not — give the preview
+--- back to the followed buffer.
+local function give_back_preview(export_buf)
+  if state.followed and state.followed ~= export_buf and vim.api.nvim_buf_is_valid(state.followed) then
+    push_now(state.followed)
+  end
 end
 
 local function png_path_for(src)
@@ -115,7 +129,7 @@ local function request_export(buf, srcfile)
   -- of a previous session can never match.
   state.export_seq = state.export_seq + 1
   local token = state.export_seq .. "-" .. tostring(uv.hrtime())
-  state.waiting_export[token] = { path = srcfile, at = uv.hrtime() }
+  state.waiting_export[token] = { path = srcfile, buf = buf, at = uv.hrtime() }
   server.broadcast({
     type = "export",
     scale = config.options.export_scale,
@@ -128,8 +142,45 @@ local function request_export(buf, srcfile)
     if w then
       state.waiting_export[token] = nil
       vim.notify("[drawio] PNG export timed out", vim.log.levels.WARN)
+      give_back_preview(w.buf)
     end
   end, config.options.export_timeout_ms)
+end
+
+--- Decode the posted PNG and write it next to the source. Returns true on
+--- success; every failure path notifies on its own.
+local function write_export_png(waiting, data)
+  local b64 = data.png:gsub("^data:image/png;base64,", "")
+  local ok, png = pcall(vim.base64.decode, b64)
+  if not ok then
+    vim.notify("[drawio] failed to decode PNG payload", vim.log.levels.ERROR)
+    return false
+  end
+
+  -- Write to a temp file and rename so a crash mid-write can never leave
+  -- a truncated PNG behind.
+  local out = png_path_for(waiting.path)
+  local tmp = out .. ".tmp"
+  local fd, err = io.open(tmp, "wb")
+  if not fd then
+    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(err), vim.log.levels.ERROR)
+    return false
+  end
+  local wok, werr = fd:write(png)
+  fd:close()
+  if not wok then
+    os.remove(tmp)
+    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(werr), vim.log.levels.ERROR)
+    return false
+  end
+  local rok, rerr = os.rename(tmp, out)
+  if not rok then
+    os.remove(tmp)
+    vim.notify("[drawio] cannot replace " .. out .. ": " .. tostring(rerr), vim.log.levels.ERROR)
+    return false
+  end
+  vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
+  return true
 end
 
 --- Called by the server when the bridge page POSTs the rendered PNG.
@@ -145,36 +196,10 @@ local function on_export_result(body)
   end
   state.waiting_export[data.token] = nil
 
-  local b64 = data.png:gsub("^data:image/png;base64,", "")
-  local ok2, png = pcall(vim.base64.decode, b64)
-  if not ok2 then
-    vim.notify("[drawio] failed to decode PNG payload", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Write to a temp file and rename so a crash mid-write can never leave
-  -- a truncated PNG behind.
-  local out = png_path_for(waiting.path)
-  local tmp = out .. ".tmp"
-  local fd, err = io.open(tmp, "wb")
-  if not fd then
-    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(err), vim.log.levels.ERROR)
-    return
-  end
-  local wok, werr = fd:write(png)
-  fd:close()
-  if not wok then
-    os.remove(tmp)
-    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(werr), vim.log.levels.ERROR)
-    return
-  end
-  local rok, rerr = os.rename(tmp, out)
-  if not rok then
-    os.remove(tmp)
-    vim.notify("[drawio] cannot replace " .. out .. ": " .. tostring(rerr), vim.log.levels.ERROR)
-    return
-  end
-  vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
+  write_export_png(waiting, data)
+  -- Whether the write succeeded or not, the render is over: give the
+  -- preview back to the followed buffer.
+  give_back_preview(waiting.buf)
 end
 
 local function on_post(path, body)
@@ -243,7 +268,11 @@ function M.attach(buf)
     group = state.augroup,
     buffer = buf,
     callback = function()
-      schedule_push(buf)
+      -- Only the followed buffer drives the preview; edits elsewhere must
+      -- neither hijack the page nor cancel the followed buffer's debounce.
+      if buf == state.followed then
+        schedule_push(buf)
+      end
     end,
   })
 
@@ -267,6 +296,9 @@ function M.attach(buf)
     buffer = buf,
     callback = function()
       state.attached[buf] = nil
+      if state.followed == buf then
+        state.followed = nil
+      end
     end,
   })
 end
@@ -300,6 +332,12 @@ function M.preview()
     )
   end
   M.attach(buf)
+  -- The preview is pinned to one buffer at a time; running :DrawioPreview
+  -- in another buffer moves the pin there.
+  if state.followed and state.followed ~= buf and vim.api.nvim_buf_is_valid(state.followed) then
+    vim.notify("[drawio] preview now follows " .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":."))
+  end
+  state.followed = buf
   push_now(buf) -- prime last_xml so a connecting page renders immediately
   -- The token in the URL is the only key to this server; the bridge page
   -- reads it from location.search and presents it on every request.
@@ -339,6 +377,7 @@ function M.stop()
     vim.api.nvim_clear_autocmds({ group = state.augroup })
   end
   state.attached = {}
+  state.followed = nil
   state.waiting_export = {}
   server.broadcast({ type = "bye" }) -- lets open pages show "stopped" instead of retrying forever
   server.stop()

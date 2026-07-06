@@ -40,7 +40,9 @@ Run `:checkhealth drawio` to verify the setup.
                                                               *:DrawioPreview*
 :DrawioPreview        Start the preview server for the current buffer and
                       open the bridge page in a browser. The preview
-                      live-updates as you type (debounced).
+                      live-updates as you type (debounced). Running it
+                      again in another buffer pins the preview to that
+                      buffer instead.
 
                                                                *:DrawioExport*
 :DrawioExport         Re-export `<name>.drawio.png` for the current buffer
@@ -88,8 +90,11 @@ letting them fail later in obscure ways.
 ==============================================================================
 5. LIMITATIONS                                    *drawio-preview-limitations*
 
-- One preview per Neovim instance, shared by all attached buffers; the
-  browser shows whichever buffer changed last.
+- One preview per Neovim instance, pinned to one buffer at a time:
+  |:DrawioPreview| (re)pins it to the current buffer, and only the pinned
+  buffer live-updates the browser. |:w| exports still work from any
+  attached buffer (the preview briefly shows that buffer while it renders,
+  then returns to the pinned one).
 - After |:DrawioStop| the browser page must be reopened via
   |:DrawioPreview| (the port may change between runs).
 - Files not named `*.drawio` keep their extension in the exported name:

@@ -11,7 +11,7 @@ function M.check()
   end
 
   local config = require("drawio.config")
-  if config.options.drawio_url:match("^https?://") then
+  if config.options.drawio_url:lower():match("^https?://") then
     health.ok("drawio_url: " .. config.options.drawio_url)
   else
     health.error("drawio_url must start with http:// or https://: " .. config.options.drawio_url)

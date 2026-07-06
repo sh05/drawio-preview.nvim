@@ -82,9 +82,22 @@ local function schedule_push(buf)
     config.options.debounce_ms,
     0,
     vim.schedule_wrap(function()
-      push_now(buf)
+      -- Re-check at fire time: the pin may have moved to another buffer
+      -- while this timer was pending, and a stale push would hijack it.
+      if buf == state.followed then
+        push_now(buf)
+      end
     end)
   )
+end
+
+--- Exporting a non-followed buffer had to load its XML into the editor;
+--- once that export finishes — successfully or not — give the preview
+--- back to the followed buffer.
+local function give_back_preview(export_buf)
+  if state.followed and state.followed ~= export_buf and vim.api.nvim_buf_is_valid(state.followed) then
+    push_now(state.followed)
+  end
 end
 
 local function png_path_for(src)
@@ -141,8 +154,45 @@ local function request_export(buf, srcfile, opts)
     if w then
       state.waiting_export[token] = nil
       vim.notify("[drawio] PNG export timed out", vim.log.levels.WARN)
+      give_back_preview(w.buf)
     end
   end, config.options.export_timeout_ms)
+end
+
+--- Decode the posted PNG and write it next to the source. Returns true on
+--- success; every failure path notifies on its own.
+local function write_export_png(waiting, data)
+  local b64 = data.png:gsub("^data:image/png;base64,", "")
+  local ok, png = pcall(vim.base64.decode, b64)
+  if not ok then
+    vim.notify("[drawio] failed to decode PNG payload", vim.log.levels.ERROR)
+    return false
+  end
+
+  -- Write to a temp file and rename so a crash mid-write can never leave
+  -- a truncated PNG behind.
+  local out = png_path_for(waiting.path)
+  local tmp = out .. ".tmp"
+  local fd, err = io.open(tmp, "wb")
+  if not fd then
+    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(err), vim.log.levels.ERROR)
+    return false
+  end
+  local wok, werr = fd:write(png)
+  fd:close()
+  if not wok then
+    os.remove(tmp)
+    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(werr), vim.log.levels.ERROR)
+    return false
+  end
+  local rok, rerr = os.rename(tmp, out)
+  if not rok then
+    os.remove(tmp)
+    vim.notify("[drawio] cannot replace " .. out .. ": " .. tostring(rerr), vim.log.levels.ERROR)
+    return false
+  end
+  vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
+  return true
 end
 
 --- Called by the server when the bridge page POSTs the rendered PNG.
@@ -158,49 +208,15 @@ local function on_export_result(body)
   end
   state.waiting_export[data.token] = nil
 
-  local b64 = data.png:gsub("^data:image/png;base64,", "")
-  local ok2, png = pcall(vim.base64.decode, b64)
-  if not ok2 then
-    vim.notify("[drawio] failed to decode PNG payload", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Write to a temp file and rename so a crash mid-write can never leave
-  -- a truncated PNG behind.
-  local out = png_path_for(waiting.path)
-  local tmp = out .. ".tmp"
-  local fd, err = io.open(tmp, "wb")
-  if not fd then
-    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(err), vim.log.levels.ERROR)
-    return
-  end
-  local wok, werr = fd:write(png)
-  fd:close()
-  if not wok then
-    os.remove(tmp)
-    vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(werr), vim.log.levels.ERROR)
-    return
-  end
-  local rok, rerr = os.rename(tmp, out)
-  if not rok then
-    os.remove(tmp)
-    vim.notify("[drawio] cannot replace " .. out .. ": " .. tostring(rerr), vim.log.levels.ERROR)
-    return
-  end
-  vim.notify("[drawio] wrote " .. vim.fn.fnamemodify(out, ":."))
-
+  local wrote = write_export_png(waiting, data)
   -- For .drawio.png buffers the rendered PNG *is* the file: only now is
   -- their :w actually complete.
-  if waiting.clear_modified and vim.api.nvim_buf_is_valid(waiting.buf) then
+  if wrote and waiting.clear_modified and vim.api.nvim_buf_is_valid(waiting.buf) then
     vim.bo[waiting.buf].modified = false
   end
-
-  -- Exporting a non-followed buffer had to load its XML into the editor;
-  -- now that the render is done, give the preview back to the followed
-  -- buffer.
-  if state.followed and state.followed ~= waiting.buf and vim.api.nvim_buf_is_valid(state.followed) then
-    push_now(state.followed)
-  end
+  -- Whether the write succeeded or not, the render is over: give the
+  -- preview back to the followed buffer.
+  give_back_preview(waiting.buf)
 end
 
 local function on_post(path, body)

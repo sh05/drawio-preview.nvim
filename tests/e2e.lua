@@ -332,7 +332,7 @@ child_lua(([[
     { '<mxGraphModel><root><mxCell id="0"/></root><!-- OTHER-EDIT --></mxGraphModel>' })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
 ]]):format(buf2, buf2))
-vim.wait(400)
+vim.wait(400) -- 4x the 100 ms debounce configured at setup: a wrong push would have landed
 check(count_msgs(function(m)
   return m.type == "load" and m.xml:find("OTHER-EDIT", 1, true) ~= nil
 end) == 0, "editing a non-followed buffer does not hijack the preview")
@@ -390,14 +390,26 @@ child_lua(([[
     { '<mxGraphModel><root><mxCell id="0"/></root><!-- A2 --></mxGraphModel>' })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
 ]]):format(buf1, buf1))
-vim.wait(400)
+vim.wait(400) -- 4x the 100 ms debounce configured at setup: a wrong push would have landed
 check(count_msgs(function(m)
   return m.type == "load" and m.xml:find("A2", 1, true) ~= nil
 end) == 0, "the previously followed buffer no longer pushes")
 
--- Back to the first buffer for the remaining checks.
-child_cmd("buffer " .. buf1)
-child_cmd("DrawioPreview")
+-- A debounce timer armed for the pinned buffer must die when the pin moves
+-- before it fires: edit buf2 (currently followed) and re-pin to buf1 in the
+-- same synchronous block, well inside the 100 ms debounce. This also puts
+-- buf1 back in charge for the remaining checks.
+child_lua(([[
+  vim.api.nvim_buf_set_lines(%d, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- STALE-TIMER --></mxGraphModel>' })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
+  vim.cmd("buffer %d")
+  vim.cmd("DrawioPreview")
+]]):format(buf2, buf2, buf1))
+vim.wait(400) -- the stale timer would fire ~100 ms in
+check(count_msgs(function(m)
+  return m.type == "load" and m.xml:find("STALE-TIMER", 1, true) ~= nil
+end) == 0, "a pending debounce for the old buffer dies when the pin moves")
 
 -- ---------------------------------------------------------------------------
 -- non-XML buffer: the export must be skipped, never rendered stale

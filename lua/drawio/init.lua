@@ -301,7 +301,9 @@ function M.preview()
   end
   M.attach(buf)
   push_now(buf) -- prime last_xml so a connecting page renders immediately
-  local url = "http://127.0.0.1:" .. port .. "/"
+  -- The token in the URL is the only key to this server; the bridge page
+  -- reads it from location.search and presents it on every request.
+  local url = "http://127.0.0.1:" .. port .. "/?t=" .. server.token
   open_browser(url)
   vim.notify("[drawio] preview at " .. url)
 end

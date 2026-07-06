@@ -7,9 +7,10 @@
 ---
 --- This only ever talks to our own bridge page on 127.0.0.1, so the HTTP
 --- parsing is intentionally minimal: request line + Content-Length body.
---- The Host header is still validated on every request (and Origin on
---- POSTs) so a hostile web page cannot reach us via DNS rebinding or
---- cross-site form posts.
+--- Every request is vetted as soon as its headers are complete — Host
+--- (anti DNS-rebinding), a per-session auth token (other local processes
+--- cannot read the diagram or forge exports), Origin on POSTs, the route,
+--- and a body-size cap — before a single body byte is buffered.
 local uv = vim.uv or vim.loop
 
 local MAX_HEADER_BYTES = 8192
@@ -18,9 +19,13 @@ local M = {
   server = nil,
   port = nil,
   html = "",
+  token = nil, -- per-session auth token, required as ?t= on every request
   sse_clients = {}, -- set: client handle -> true
   on_post = nil, -- fun(path: string, body: string)
   on_sse_connect = nil, -- fun(client: uv_tcp_t)
+  -- Limits (module fields so tests can tighten them):
+  max_export_body = 64 * 1024 * 1024, -- PNG POSTs; everything else allows no body
+  idle_timeout_ms = 30000, -- close connections that make no progress
 }
 
 --- write() that never throws. Returns false for dead clients so callers
@@ -125,11 +130,38 @@ local function origin_allowed(origin)
   return host ~= nil and host_allowed(host)
 end
 
-local function handle_request(client, req)
-  if not host_allowed(req.host) then
-    respond(client, "403 Forbidden", { ["Connection"] = "close" }, "")
-    return
+local function query_param(query, key)
+  for k, v in query:gmatch("([^&=]+)=([^&]*)") do
+    if k == key then
+      return v
+    end
   end
+end
+
+--- Vet a request from its headers alone, before any body is buffered, so
+--- hostile or oversized requests are rejected without costing memory.
+--- Returns (reject_status, max_body_bytes).
+local function vet_request(req)
+  if not host_allowed(req.host) then
+    return "403 Forbidden"
+  end
+  if not M.token or req.token ~= M.token then
+    return "403 Forbidden"
+  end
+  if req.method == "GET" and (req.path == "/" or req.path == "/index.html" or req.path == "/events") then
+    return nil, 0
+  end
+  if req.method == "POST" and req.path == "/export-result" then
+    if not origin_allowed(req.origin) then
+      return "403 Forbidden"
+    end
+    return nil, M.max_export_body
+  end
+  return "404 Not Found"
+end
+
+--- Route a fully-vetted, fully-buffered request. Runs on the main loop.
+local function handle_request(client, req)
   if req.method == "GET" and (req.path == "/" or req.path == "/index.html") then
     respond(client, "200 OK", {
       ["Content-Type"] = "text/html; charset=utf-8",
@@ -162,10 +194,6 @@ local function handle_request(client, req)
       M.on_sse_connect(client)
     end
   elseif req.method == "POST" and req.path == "/export-result" then
-    if not origin_allowed(req.origin) then
-      respond(client, "403 Forbidden", { ["Connection"] = "close" }, "")
-      return
-    end
     if M.on_post then
       M.on_post(req.path, req.body)
     end
@@ -195,35 +223,81 @@ local function on_connection(err)
   local req
   local body_chunks, body_len = {}, 0
 
+  -- Reap connections that stop making progress (half-open sockets, bodies
+  -- that never complete); otherwise their partial state sits in memory
+  -- forever. Everything below runs on the uv loop, no nvim API involved.
+  local idle = uv.new_timer()
+  local function disarm()
+    if idle then
+      idle:stop()
+      idle:close()
+      idle = nil
+    end
+  end
+  local function touch()
+    if idle then
+      idle:stop()
+      idle:start(M.idle_timeout_ms, 0, function()
+        disarm()
+        if not client:is_closing() then
+          client:close()
+        end
+      end)
+    end
+  end
+  local function reject(status)
+    disarm()
+    client:read_stop()
+    respond(client, status, { ["Connection"] = "close" }, "")
+  end
+  touch()
+
   client:read_start(function(rerr, chunk)
     if rerr or not chunk then
+      disarm()
       drop_client(client)
       return
     end
+    touch()
 
     if not req then
       head_buf = head_buf .. chunk
       local pos = head_buf:find("\r\n\r\n", 1, true)
       if not pos then
         if #head_buf > MAX_HEADER_BYTES then
+          disarm()
           client:close()
         end
         return -- headers not complete yet
       end
       local head = head_buf:sub(1, pos - 1)
       local lhead = head:lower()
-      local method, path = head:match("^(%u+)%s+(%S+)")
+      local method, target = head:match("^(%u+)%s+(%S+)")
       if not method then
+        disarm()
         client:close()
         return
       end
+      local path, query = target:match("^([^?]*)%??(.*)$")
       req = {
         method = method,
         path = path,
+        token = query_param(query, "t"),
         host = lhead:match("\r\nhost:%s*([^\r\n]+)"),
         origin = lhead:match("\r\norigin:%s*([^\r\n]+)"),
         content_length = tonumber(lhead:match("\r\ncontent%-length:%s*(%d+)")) or 0,
       }
+      -- Fail fast on headers alone: hostile requests are answered before
+      -- any of their body is read into memory.
+      local reject_status, max_body = vet_request(req)
+      if reject_status then
+        reject(reject_status)
+        return
+      end
+      if req.content_length > max_body then
+        reject("413 Payload Too Large")
+        return
+      end
       local rest = head_buf:sub(pos + 4)
       head_buf = ""
       if #rest > 0 then
@@ -240,6 +314,7 @@ local function on_connection(err)
     end
     req.body = table.concat(body_chunks):sub(1, req.content_length)
 
+    disarm()
     client:read_stop()
     vim.schedule(function()
       handle_request(client, req)
@@ -261,6 +336,12 @@ function M.start(opts)
   M.html = opts.html or ""
   M.on_post = opts.on_post
   M.on_sse_connect = opts.on_sse_connect
+  -- Fresh secret per server lifetime: only the browser page we open (which
+  -- gets the token in its URL) can talk to this server. A stale page from a
+  -- previous session, or any other local process, is locked out.
+  M.token = (uv.random(16):gsub(".", function(c)
+    return ("%02x"):format(c:byte())
+  end))
 
   M.server = uv.new_tcp()
   -- bind() fail-returns (nil, err) rather than throwing; ignoring it would
@@ -306,6 +387,7 @@ function M.stop()
   M.server = nil
   M.port = nil
   M.html = ""
+  M.token = nil
   M.on_post = nil
   M.on_sse_connect = nil
 end

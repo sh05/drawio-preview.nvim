@@ -13,6 +13,7 @@ vim.opt.rtp:prepend(root)
 
 local server = require("drawio.server")
 local config = require("drawio.config")
+local uv = vim.uv or vim.loop
 
 local checks, failures = 0, 0
 local function check(ok, name, detail)
@@ -77,41 +78,52 @@ check(type(port) == "number" and port > 0, "server starts on an ephemeral port")
 check(server.is_running(), "is_running() reports true")
 
 local base = "http://127.0.0.1:" .. port
+local token = server.token
+check(type(token) == "string" and #token == 32, "a per-session auth token is generated")
+local auth = "?t=" .. token
 
+-- Without (or with a wrong) token, every route is locked.
 local r = curl({ base .. "/" })
+check(r and r.code == 403, "GET / without the token is rejected")
+r = curl({ base .. "/?t=wrong" })
+check(r and r.code == 403, "GET / with a wrong token is rejected")
+r = curl({ "-X", "POST", "--data", "x", base .. "/export-result" })
+check(r and r.code == 403, "POST without the token is rejected")
+
+r = curl({ base .. "/" .. auth })
 check(r and r.code == 200 and r.body == HTML, "GET / serves the bridge page")
 
-r = curl({ base .. "/index.html" })
+r = curl({ base .. "/index.html" .. auth })
 check(r and r.code == 200 and r.body == HTML, "GET /index.html serves the bridge page")
 
-r = curl({ "-H", "Host: localhost:" .. port, base .. "/" })
+r = curl({ "-H", "Host: localhost:" .. port, base .. "/" .. auth })
 check(r and r.code == 200, "GET / accepts Host localhost:<port>")
 
-r = curl({ "-H", "Host: evil.example:" .. port, base .. "/" })
+r = curl({ "-H", "Host: evil.example:" .. port, base .. "/" .. auth })
 check(r and r.code == 403, "GET / rejects a foreign Host (DNS rebinding)")
 
-r = curl({ "-H", "Host: 127.0.0.1:1", base .. "/" })
+r = curl({ "-H", "Host: 127.0.0.1:1", base .. "/" .. auth })
 check(r and r.code == 403, "GET / rejects a Host naming the wrong port")
 
-r = curl({ base .. "/nope" })
+r = curl({ base .. "/nope" .. auth })
 check(r and r.code == 404, "GET on an unknown path is a 404")
 
-r = curl({ "-X", "POST", "--data", "x", base .. "/nope" })
+r = curl({ "-X", "POST", "--data", "x", base .. "/nope" .. auth })
 check(r and r.code == 404, "POST to an unknown path is a 404")
 
 posts = {}
-r = curl({ "-X", "POST", "--data", "hello", base .. "/export-result" })
+r = curl({ "-X", "POST", "--data", "hello", base .. "/export-result" .. auth })
 check(
   r and r.code == 200 and #posts == 1 and posts[1].path == "/export-result" and posts[1].body == "hello",
   "POST /export-result without Origin (non-browser client) is accepted"
 )
 
 posts = {}
-r = curl({ "-X", "POST", "-H", "Origin: " .. base, "--data", "hi", base .. "/export-result" })
+r = curl({ "-X", "POST", "-H", "Origin: " .. base, "--data", "hi", base .. "/export-result" .. auth })
 check(r and r.code == 200 and #posts == 1, "POST with our own Origin is accepted")
 
 posts = {}
-r = curl({ "-X", "POST", "-H", "Origin: http://evil.example", "--data", "hi", base .. "/export-result" })
+r = curl({ "-X", "POST", "-H", "Origin: http://evil.example", "--data", "hi", base .. "/export-result" .. auth })
 check(r and r.code == 403 and #posts == 0, "POST with a foreign Origin is rejected")
 
 -- Large PNG payloads arrive in many TCP chunks; make sure reassembly is exact.
@@ -121,7 +133,7 @@ local bigfile = vim.fn.tempname()
 local bf = assert(io.open(bigfile, "wb"))
 bf:write(big)
 bf:close()
-r = curl({ "-X", "POST", "--data-binary", "@" .. bigfile, base .. "/export-result" })
+r = curl({ "-X", "POST", "--data-binary", "@" .. bigfile, base .. "/export-result" .. auth })
 os.remove(bigfile)
 check(r and r.code == 200, "3 MB POST gets a 200")
 check(#posts == 1 and posts[1].body == big, "3 MB body is reassembled from chunks byte-for-byte")
@@ -131,7 +143,7 @@ check(#posts == 1 and posts[1].body == big, "3 MB body is reassembled from chunk
 -- ---------------------------------------------------------------------------
 
 local sse_file = vim.fn.tempname()
-local sse_proc = vim.system({ "curl", "-sN", "-o", sse_file, "--max-time", "60", base .. "/events" })
+local sse_proc = vim.system({ "curl", "-sN", "-o", sse_file, "--max-time", "60", base .. "/events" .. auth })
 
 check(
   wait_for(function()
@@ -175,13 +187,90 @@ check(
 )
 os.remove(sse_file)
 
+-- ---------------------------------------------------------------------------
+-- resource limits: body caps and idle reaping
+-- ---------------------------------------------------------------------------
+
+-- An oversized body is refused from its Content-Length alone, before any
+-- of it is buffered.
+server.max_export_body = 1024
+posts = {}
+local overfile = vim.fn.tempname()
+local of = assert(io.open(overfile, "wb"))
+of:write(string.rep("y", 4096))
+of:close()
+r = curl({ "-X", "POST", "--data-binary", "@" .. overfile, base .. "/export-result" .. auth })
+os.remove(overfile)
+check(r and r.code == 413 and #posts == 0, "over-cap POST body is refused with 413")
+server.max_export_body = 64 * 1024 * 1024
+
+r = curl({ "-X", "GET", "--data", "x", base .. "/" .. auth })
+check(r and r.code == 413, "a body on a body-less route is refused with 413")
+
+-- An *established* SSE stream must be exempt from the idle reaper: its
+-- request completed (disarm runs before handle_request re-arms the read),
+-- so it may sit quietly between pushes for arbitrarily long.
+server.idle_timeout_ms = 150
+local sse2_file = vim.fn.tempname()
+local sse2_proc = vim.system({ "curl", "-sN", "-o", sse2_file, "--max-time", "30", base .. "/events" .. auth })
+check(
+  wait_for(function()
+    return server.client_count() == 1
+  end),
+  "SSE client connects under a tight idle timeout"
+)
+vim.wait(500) -- well past idle_timeout_ms
+-- Marker without "/": Neovim 0.10's vim.json.encode escapes it as \/.
+server.broadcast({ type = "load", xml = "IDLE-REAPER-PROBE" })
+check(
+  wait_for(function()
+    local f2 = io.open(sse2_file, "rb")
+    if not f2 then
+      return false
+    end
+    local text = f2:read("*a")
+    f2:close()
+    return text:find("IDLE-REAPER-PROBE", 1, true) ~= nil
+  end),
+  "established SSE stream survives the idle reaper"
+)
+sse2_proc:kill(9)
+wait_for(function()
+  return server.client_count() == 0
+end)
+os.remove(sse2_file)
+
+-- Connections that make no progress (half-open sockets, bodies that never
+-- complete) are reaped by the idle timer instead of parking in memory.
+local reaped = false
+local idle_sock = uv.new_tcp()
+idle_sock:connect("127.0.0.1", port, function(cerr)
+  if cerr then
+    return
+  end
+  idle_sock:read_start(function(_, data)
+    if not data then
+      reaped = true
+      if not idle_sock:is_closing() then
+        idle_sock:close()
+      end
+    end
+  end)
+end)
+check(
+  wait_for(function()
+    return reaped
+  end, 3000),
+  "idle connection is closed by the timeout"
+)
+server.idle_timeout_ms = 30000
+
 server.stop()
 check(not server.is_running(), "stop() shuts the server down")
-r = curl({ base .. "/" })
+r = curl({ base .. "/" .. auth })
 check(r and r.code ~= 200, "stopped server no longer accepts connections")
 
 -- A taken port must surface as a clean single-line error, not a stack trace.
-local uv = vim.uv or vim.loop
 local blocker = uv.new_tcp()
 blocker:bind("127.0.0.1", 0)
 local busy_port = blocker:getsockname().port

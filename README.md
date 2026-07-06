@@ -119,10 +119,15 @@ entirely client-side.
 
 ## Security
 
-The preview server binds to `127.0.0.1` only, validates the `Host` header on
-every request (blocking DNS-rebinding pages from reading your diagram), and
-rejects cross-origin `POST`s. Other processes of the *same* local user can
-still connect, as with any localhost preview server.
+The preview server binds to `127.0.0.1` only and requires a random
+per-session auth token on every request — it is embedded in the URL that
+`:DrawioPreview` opens, so only that browser page can read the diagram or
+post exports; other local processes (and other users on shared machines)
+are locked out. On top of that it validates the `Host` header on every
+request (blocking DNS-rebinding pages) and rejects cross-origin `POST`s.
+Requests are vetted from their headers alone: bodies are capped (64 MB for
+export uploads, none elsewhere, `413` beyond that) before anything is
+buffered, and connections that stop making progress are closed after 30 s.
 
 ## Limitations
 

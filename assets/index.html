@@ -26,6 +26,10 @@
   // diagram to (or accept events from) anything else the iframe might
   // get navigated to.
   var drawioOrigin = new URL(frame.src).origin;
+  // Per-session auth token, handed to us in the URL by :DrawioPreview;
+  // the server rejects any request that does not present it.
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var auth = '?t=' + encodeURIComponent(token);
   var statusEl = document.getElementById('status');
   var ready = false;        // draw.io sent {event:'init'}
   var lastXml = null;       // most recent XML from Neovim
@@ -69,7 +73,7 @@
     } else if (msg.event === 'export') {
       // msg.data is a data URI ("data:image/png;base64,...").
       // msg.message echoes back what we sent, including our token.
-      fetch('/export-result', {
+      fetch('/export-result' + auth, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -85,7 +89,7 @@
   });
 
   // --- messages from Neovim (SSE) ----------------------------------------
-  var es = new EventSource('/events');
+  var es = new EventSource('/events' + auth);
   es.onopen = function () { flash('connected'); };
   es.onerror = function () { flash('disconnected — retrying...'); };
   es.onmessage = function (e) {

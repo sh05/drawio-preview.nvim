@@ -470,6 +470,54 @@ check(
   "modified flag clears once the PNG is written"
 )
 
+-- :w to a *different* .drawio.png is a copy, not a save of this buffer's
+-- file: the copy is written but 'modified' must survive.
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- PNG-EDIT-2 --></mxGraphModel>' })
+]])
+child_cmd("write " .. tmp .. "/copy.drawio.png")
+check(
+  wait_for(function()
+    return #export_tokens() == 5
+  end),
+  ":w <other>.drawio.png renders a copy"
+)
+local png5 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-5\12\13\14", 64)
+post_export_result(png5, export_tokens()[5])
+check(
+  wait_for(function()
+    return read_file(tmp .. "/copy.drawio.png") == png5
+  end),
+  "the copy lands at the written path"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "writing a copy does not clear the buffer's modified flag")
+
+-- Edits typed while an export is in flight cover a newer revision than the
+-- render; they must keep their 'modified' flag when the result lands.
+child_cmd("write")
+check(
+  wait_for(function()
+    return #export_tokens() == 6
+  end),
+  ":w after the copy still exports the buffer's own file"
+)
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- MID-FLIGHT-EDIT --></mxGraphModel>' })
+]])
+local png6 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-6\15\16\17", 64)
+post_export_result(png6, export_tokens()[6])
+check(
+  wait_for(function()
+    return read_file(editable_png) == png6
+  end),
+  "the in-flight export still writes its PNG"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "edits made during an in-flight export keep the modified flag")
+
 -- A .drawio.png whose XML we cannot read must open locked, not writable.
 local opaque_png = tmp .. "/plain.drawio.png"
 local opf = assert(io.open(opaque_png, "wb"))
@@ -488,7 +536,7 @@ child_cmd("buffer " .. buf1)
 child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
 child_cmd("write")
 vim.wait(500)
-check(#export_tokens() == 4, "saving a non-XML buffer does not broadcast an export request")
+check(#export_tokens() == 6, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
 check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")

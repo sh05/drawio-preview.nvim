@@ -347,5 +347,9 @@ check(g4 == nil and e4:find("compressed", 1, true) ~= nil, "compressed (zTXt) pa
 local g5 = png.extract_xml(SIG .. IHDR .. png_chunk("tEXt", "Comment\0hi") .. png_chunk("tEXt", "mxfile\0" .. encoded))
 check(g5 == xml, "other tEXt chunks are skipped on the way to mxfile")
 
+local truncated = (SIG .. IHDR .. png_chunk("tEXt", "mxfile\0" .. encoded)):sub(1, #SIG + #IHDR + 20)
+local g6, e6 = png.extract_xml(truncated)
+check(g6 == nil and e6 ~= nil, "a truncated mxfile chunk is rejected, not returned partially")
+
 print(("---\n%d checks, %d failures"):format(checks, failures))
 os.exit(failures > 0 and 1 or 0)

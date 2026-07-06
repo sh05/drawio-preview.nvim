@@ -104,8 +104,10 @@ local function png_path_for(src)
   -- foo.drawio -> foo.drawio.png / foo.xml -> foo.xml.drawio.png
   -- (never strip the extension: foo.xml and foo.drawio in the same
   -- directory must not fight over one PNG). A buffer that *is* a
-  -- .drawio.png (opened via BufReadCmd) renders back onto itself.
-  if src:sub(-11) == ".drawio.png" then
+  -- .drawio.png (opened via BufReadCmd) renders back onto itself; the
+  -- suffix check is case-insensitive because 'fileignorecase' systems
+  -- fire the autocmds for FOO.DRAWIO.PNG too.
+  if src:sub(-11):lower() == ".drawio.png" then
     return src
   end
   if src:sub(-7) == ".drawio" then
@@ -139,8 +141,11 @@ local function request_export(buf, srcfile, opts)
     buf = buf,
     at = uv.hrtime(),
     -- Set for .drawio.png buffers: their :w is only complete once the
-    -- rendered PNG is on disk.
+    -- rendered PNG is on disk. The changedtick pins *which* revision the
+    -- render covers — edits typed while it is in flight must keep their
+    -- 'modified' flag.
     clear_modified = opts and opts.clear_modified or nil,
+    tick = vim.api.nvim_buf_get_changedtick(buf),
   }
   server.broadcast({
     type = "export",
@@ -210,8 +215,14 @@ local function on_export_result(body)
 
   local wrote = write_export_png(waiting, data)
   -- For .drawio.png buffers the rendered PNG *is* the file: only now is
-  -- their :w actually complete.
-  if wrote and waiting.clear_modified and vim.api.nvim_buf_is_valid(waiting.buf) then
+  -- their :w actually complete — and only if nothing was typed while the
+  -- render was in flight (the PNG covers the requested revision only).
+  if
+    wrote
+    and waiting.clear_modified
+    and vim.api.nvim_buf_is_valid(waiting.buf)
+    and vim.api.nvim_buf_get_changedtick(waiting.buf) == waiting.tick
+  then
     vim.bo[waiting.buf].modified = false
   end
   -- Whether the write succeeded or not, the render is over: give the
@@ -385,7 +396,7 @@ function M.read_png(buf, path)
   local lines = {}
   local f = io.open(path, "rb")
   if f then
-    local data = f:read("*a")
+    local data = f:read("*a") or "" -- nil for directories and other unreadables
     f:close()
     local xml, err = png.extract_xml(data)
     if not xml then
@@ -399,7 +410,17 @@ function M.read_png(buf, path)
     end
     lines = vim.split(xml, "\n", { plain = true })
   end
+  -- Unlock in case an earlier read of this buffer hit the error path
+  -- above and the PNG has been fixed externally since.
+  vim.bo[buf].modifiable = true
+  vim.bo[buf].readonly = false
+  -- The initial load must not be an undo step: `u` right after opening
+  -- would empty the buffer while leaving it unmodified, and a :w would
+  -- then render an empty diagram over the PNG.
+  local undolevels = vim.bo[buf].undolevels
+  vim.bo[buf].undolevels = -1
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].undolevels = undolevels
   vim.bo[buf].modified = false
   vim.bo[buf].filetype = "drawio"
 end
@@ -409,6 +430,15 @@ end
 --- 'modified' stays set until the rendered PNG is actually on disk —
 --- clearing it optimistically could lose the XML to a failed export.
 function M.write_png(buf, path)
+  if not vim.bo[buf].modifiable then
+    -- The locked path in read_png: this buffer does not hold the PNG's
+    -- diagram, so even :w! must not render over the original file.
+    vim.notify(
+      "[drawio] this buffer could not be read as a diagram; refusing to overwrite " .. path,
+      vim.log.levels.ERROR
+    )
+    return
+  end
   if not server.is_running() or server.client_count() == 0 then
     vim.notify(
       "[drawio] writing a .drawio.png needs a connected preview to render it — run :DrawioPreview, then :w again",
@@ -417,7 +447,14 @@ function M.write_png(buf, path)
     return
   end
   M.attach(buf)
-  request_export(buf, path, { clear_modified = true })
+  -- BufWriteCmd fires for whatever *path* is written; only a write to the
+  -- buffer's own file completes that buffer's :w. A copy written elsewhere
+  -- (:w other.drawio.png) must leave 'modified' alone. Compare realpaths:
+  -- the buffer name may have symlinks resolved (/var vs /private/var on
+  -- macOS) while the autocmd's path does not.
+  local bufname = vim.api.nvim_buf_get_name(buf)
+  local own_file = path == bufname or (uv.fs_realpath(path) ~= nil and uv.fs_realpath(path) == uv.fs_realpath(bufname))
+  request_export(buf, path, { clear_modified = own_file })
 end
 
 function M.stop()

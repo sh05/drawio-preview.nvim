@@ -168,7 +168,7 @@ end
 --- success; every failure path notifies on its own.
 local function write_export_png(waiting, data)
   local b64 = data.png:gsub("^data:image/png;base64,", "")
-  local ok, png = pcall(vim.base64.decode, b64)
+  local ok, png_bytes = pcall(vim.base64.decode, b64)
   if not ok then
     vim.notify("[drawio] failed to decode PNG payload", vim.log.levels.ERROR)
     return false
@@ -183,7 +183,7 @@ local function write_export_png(waiting, data)
     vim.notify("[drawio] cannot write " .. tmp .. ": " .. tostring(err), vim.log.levels.ERROR)
     return false
   end
-  local wok, werr = fd:write(png)
+  local wok, werr = fd:write(png_bytes)
   fd:close()
   if not wok then
     os.remove(tmp)

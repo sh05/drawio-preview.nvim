@@ -220,7 +220,8 @@ check(
   "SSE client connects under a tight idle timeout"
 )
 vim.wait(500) -- well past idle_timeout_ms
-server.broadcast({ type = "load", xml = "<idle/>" })
+-- Marker without "/": Neovim 0.10's vim.json.encode escapes it as \/.
+server.broadcast({ type = "load", xml = "IDLE-REAPER-PROBE" })
 check(
   wait_for(function()
     local f2 = io.open(sse2_file, "rb")
@@ -229,7 +230,7 @@ check(
     end
     local text = f2:read("*a")
     f2:close()
-    return text:find("<idle/>", 1, true) ~= nil
+    return text:find("IDLE-REAPER-PROBE", 1, true) ~= nil
   end),
   "established SSE stream survives the idle reaper"
 )

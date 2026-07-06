@@ -305,7 +305,7 @@ vim.wait(500)
 check(#export_tokens() == 2, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
-check(warn_messages:find("skipped PNG export", 1, true) ~= nil, "skipped export warns the user")
+check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")
 
 -- ---------------------------------------------------------------------------
 -- :DrawioStop

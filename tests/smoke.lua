@@ -219,6 +219,8 @@ check(not pcall(config.setup, { export_scale = 0 }), "zero export_scale is rejec
 check(not pcall(config.setup, { export_timeout_ms = 0 }), "zero export_timeout_ms is rejected")
 check(not pcall(config.setup, { port = 99999 }), "out-of-range port is rejected")
 check(not pcall(config.setup, { port = 1.5 }), "non-integer port is rejected")
+check(not pcall(config.setup, { debounce_ms = 0 / 0 }), "NaN debounce_ms is rejected")
+check(pcall(config.setup, { drawio_url = "HTTP://localhost:8080" }), "uppercase URL scheme is accepted")
 check(pcall(config.setup, { port = 65535, debounce_ms = 0, browser = { "true" } }), "boundary values are accepted")
 config.setup({})
 

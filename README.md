@@ -172,6 +172,10 @@ on the fly (`:w` / `:DrawioExport` writes `<name>.drawio.png` next to it).
 - Mermaid uses standard Mermaid syntax.
 - `:DrawioLayout` is unavailable for these buffers — its result is mxGraph
   XML, which would destroy the text source.
+- The conversion happens inside draw.io: when the text has syntax errors,
+  the editor keeps its last successful conversion, and an export taken at
+  that moment renders that older diagram. Check the preview before trusting
+  an exported PNG of a CSV/Mermaid source.
 
 ## License
 

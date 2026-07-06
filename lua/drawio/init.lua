@@ -64,7 +64,8 @@ end
 --- converted by draw.io itself (load action with a format descriptor);
 --- everything else is treated as mxGraph XML.
 local function source_format(buf)
-  local name = vim.api.nvim_buf_get_name(buf)
+  -- Case-insensitive: 'fileignorecase' systems open DATA.CSV as csv too.
+  local name = vim.api.nvim_buf_get_name(buf):lower()
   if name:match("%.csv$") then
     return "csv"
   end
@@ -441,7 +442,7 @@ function M.preview()
     vim.notify("[drawio] preview now follows " .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ":."))
   end
   state.followed = buf
-  push_now(buf) -- prime last_xml so a connecting page renders immediately
+  push_now(buf) -- prime last_load so a connecting page renders immediately
   -- The token in the URL is the only key to this server; the bridge page
   -- reads it from location.search and presents it on every request.
   local url = "http://127.0.0.1:" .. port .. "/?t=" .. server.token

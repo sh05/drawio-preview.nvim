@@ -121,6 +121,11 @@ directives followed by data rows); Mermaid uses standard Mermaid syntax.
 |:DrawioLayout| is unavailable for these buffers, since its result is
 mxGraph XML.
 
+The conversion happens inside draw.io: when the text has syntax errors,
+the editor keeps its last successful conversion, and an export taken at
+that moment renders that older diagram. Check the preview before trusting
+an exported PNG of a CSV/Mermaid source.
+
 ==============================================================================
 7. LIMITATIONS                                    *drawio-preview-limitations*
 

@@ -700,6 +700,16 @@ check(
   "a .csv buffer is pushed with a csv format descriptor"
 )
 
+-- The layout refusal covers csv too, and tells the user why.
+child_cmd("DrawioLayout tree")
+vim.wait(200)
+check(#layout_msgs() == 3, ":DrawioLayout refuses csv sources too")
+local refusal_messages = child_lua([[return vim.fn.execute("messages")]])
+check(
+  refusal_messages:find("not available for CSV/Mermaid", 1, true) ~= nil,
+  "the CSV/Mermaid layout refusal warns the user"
+)
+
 -- Back to the first buffer for the remaining checks.
 child_cmd("buffer " .. buf1)
 child_cmd("DrawioPreview")

@@ -59,14 +59,22 @@ local f = assert(io.open(drawio_file, "wb"))
 f:write(table.concat(initial_xml_lines, "\n") .. "\n")
 f:close()
 
+-- vim.v.progpath: the same binary that runs this suite, not whatever
+-- "nvim" happens to be first in $PATH. The watchdog makes the child
+-- reap itself if this process dies mid-run (a thrown error would
+-- otherwise orphan a listening headless Neovim forever).
+local watchdog = ("lua do local p = %d; local t = vim.uv.new_timer(); "):format(vim.uv.os_getpid())
+  .. "t:start(2000, 2000, function() if not vim.uv.kill(p, 0) then os.exit(1) end end) end"
 local child = vim.system({
-  "nvim",
+  vim.v.progpath,
   "--clean",
   "--headless",
   "--listen",
   sock,
   "--cmd",
   "lua vim.opt.rtp:prepend([[" .. root .. "]])",
+  "--cmd",
+  watchdog,
   drawio_file,
 })
 
@@ -82,6 +90,12 @@ check(
   end),
   "child Neovim starts and accepts RPC"
 )
+
+if not chan then
+  print("FATAL - could not connect to the child Neovim over RPC")
+  child:kill(9)
+  os.exit(1)
+end
 
 local function child_lua(code, ...)
   return vim.rpcrequest(chan, "nvim_exec_lua", code, { ... })
@@ -181,10 +195,13 @@ check(
   "debounced edit is pushed to the preview"
 )
 
-vim.wait(300) -- give a would-be push of edit A time to (wrongly) arrive
+-- Both edits happen inside one synchronous exec_lua, so any push already
+-- reads B; the real coalescing signal is the *total* number of pushes:
+-- prime (1) + one debounced push (2). An uncancelled timer would give 3.
+vim.wait(300) -- give a second (wrong) push time to arrive
 check(count_msgs(function(m)
-  return m.type == "load" and m.xml:find("<!-- A -->", 1, true) ~= nil
-end) == 0, "rapid successive edits are coalesced into one push (debounce)")
+  return m.type == "load"
+end) == 2, "rapid successive edits are coalesced into one push (debounce)")
 
 -- ---------------------------------------------------------------------------
 -- :w -> export request -> POST /export-result -> PNG on disk
@@ -225,8 +242,8 @@ check(
 )
 
 --- POST a fake rendered PNG back, the way the bridge page does.
-local function post_export_result(png_bytes, token)
-  local body = vim.json.encode({ png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = token })
+local function post_export_result(png_bytes, export_token)
+  local body = vim.json.encode({ png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = export_token })
   local body_file = tmp .. "/post-body.json"
   local bf = assert(io.open(body_file, "wb"))
   bf:write(body)
@@ -392,7 +409,7 @@ vim.wait(500)
 check(#export_tokens() == 3, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
-check(warn_messages:find("skipped PNG export", 1, true) ~= nil, "skipped export warns the user")
+check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")
 
 -- ---------------------------------------------------------------------------
 -- :DrawioStop

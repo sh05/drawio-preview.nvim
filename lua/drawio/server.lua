@@ -344,9 +344,12 @@ function M.start(opts)
   end))
 
   M.server = uv.new_tcp()
-  -- A taken port fails at bind() on Linux but (SO_REUSEADDR) only at
-  -- listen() on macOS; check both so the conflict surfaces everywhere.
-  local ok, err = pcall(M.server.bind, M.server, "127.0.0.1", opts.port or 0)
+  -- bind() fail-returns (nil, err) rather than throwing; ignoring it would
+  -- let the OS auto-bind the socket to 0.0.0.0 on a random port at
+  -- listen() time. And EADDRINUSE specifically is deferred by libuv to
+  -- listen() (delayed_error), so both calls must be checked.
+  local bok, berr = M.server:bind("127.0.0.1", opts.port or 0)
+  local ok, err = bok == 0, berr
   if ok then
     local lok, lerr = M.server:listen(128, on_connection)
     ok, err = lok == 0, lerr

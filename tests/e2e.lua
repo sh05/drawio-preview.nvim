@@ -59,14 +59,22 @@ local f = assert(io.open(drawio_file, "wb"))
 f:write(table.concat(initial_xml_lines, "\n") .. "\n")
 f:close()
 
+-- vim.v.progpath: the same binary that runs this suite, not whatever
+-- "nvim" happens to be first in $PATH. The watchdog makes the child
+-- reap itself if this process dies mid-run (a thrown error would
+-- otherwise orphan a listening headless Neovim forever).
+local watchdog = ("lua do local p = %d; local t = vim.uv.new_timer(); "):format(vim.uv.os_getpid())
+  .. "t:start(2000, 2000, function() if not vim.uv.kill(p, 0) then os.exit(1) end end) end"
 local child = vim.system({
-  "nvim",
+  vim.v.progpath,
   "--clean",
   "--headless",
   "--listen",
   sock,
   "--cmd",
   "lua vim.opt.rtp:prepend([[" .. root .. "]])",
+  "--cmd",
+  watchdog,
   drawio_file,
 })
 
@@ -82,6 +90,12 @@ check(
   end),
   "child Neovim starts and accepts RPC"
 )
+
+if not chan then
+  print("FATAL - could not connect to the child Neovim over RPC")
+  child:kill(9)
+  os.exit(1)
+end
 
 local function child_lua(code, ...)
   return vim.rpcrequest(chan, "nvim_exec_lua", code, { ... })
@@ -181,10 +195,13 @@ check(
   "debounced edit is pushed to the preview"
 )
 
-vim.wait(300) -- give a would-be push of edit A time to (wrongly) arrive
+-- Both edits happen inside one synchronous exec_lua, so any push already
+-- reads B; the real coalescing signal is the *total* number of pushes:
+-- prime (1) + one debounced push (2). An uncancelled timer would give 3.
+vim.wait(300) -- give a second (wrong) push time to arrive
 check(count_msgs(function(m)
-  return m.type == "load" and m.xml:find("<!-- A -->", 1, true) ~= nil
-end) == 0, "rapid successive edits are coalesced into one push (debounce)")
+  return m.type == "load"
+end) == 2, "rapid successive edits are coalesced into one push (debounce)")
 
 -- ---------------------------------------------------------------------------
 -- :w -> export request -> POST /export-result -> PNG on disk
@@ -260,8 +277,12 @@ local function post_json(path, tbl)
 end
 
 --- POST a fake rendered PNG back, the way the bridge page does.
-local function post_export_result(png_bytes, token)
-  return post_json("/export-result", { png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = token })
+--- (export_token, not token: the session token local is in scope here.)
+local function post_export_result(png_bytes, export_token)
+  return post_json(
+    "/export-result",
+    { png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = export_token }
+  )
 end
 
 local png1 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-1\0\1\2", 64)
@@ -319,7 +340,7 @@ child_lua(([[
     { '<mxGraphModel><root><mxCell id="0"/></root><!-- OTHER-EDIT --></mxGraphModel>' })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
 ]]):format(buf2, buf2))
-vim.wait(400)
+vim.wait(400) -- 4x the 100 ms debounce configured at setup: a wrong push would have landed
 check(count_msgs(function(m)
   return m.type == "load" and m.xml:find("OTHER-EDIT", 1, true) ~= nil
 end) == 0, "editing a non-followed buffer does not hijack the preview")
@@ -377,14 +398,26 @@ child_lua(([[
     { '<mxGraphModel><root><mxCell id="0"/></root><!-- A2 --></mxGraphModel>' })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
 ]]):format(buf1, buf1))
-vim.wait(400)
+vim.wait(400) -- 4x the 100 ms debounce configured at setup: a wrong push would have landed
 check(count_msgs(function(m)
   return m.type == "load" and m.xml:find("A2", 1, true) ~= nil
 end) == 0, "the previously followed buffer no longer pushes")
 
--- Back to the first buffer for the remaining checks.
-child_cmd("buffer " .. buf1)
-child_cmd("DrawioPreview")
+-- A debounce timer armed for the pinned buffer must die when the pin moves
+-- before it fires: edit buf2 (currently followed) and re-pin to buf1 in the
+-- same synchronous block, well inside the 100 ms debounce. This also puts
+-- buf1 back in charge for the remaining checks.
+child_lua(([[
+  vim.api.nvim_buf_set_lines(%d, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- STALE-TIMER --></mxGraphModel>' })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = %d })
+  vim.cmd("buffer %d")
+  vim.cmd("DrawioPreview")
+]]):format(buf2, buf2, buf1))
+vim.wait(400) -- the stale timer would fire ~100 ms in
+check(count_msgs(function(m)
+  return m.type == "load" and m.xml:find("STALE-TIMER", 1, true) ~= nil
+end) == 0, "a pending debounce for the old buffer dies when the pin moves")
 
 -- ---------------------------------------------------------------------------
 -- .drawio.png buffers: read the embedded XML, :w re-renders through export
@@ -445,6 +478,54 @@ check(
   "modified flag clears once the PNG is written"
 )
 
+-- :w to a *different* .drawio.png is a copy, not a save of this buffer's
+-- file: the copy is written but 'modified' must survive.
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- PNG-EDIT-2 --></mxGraphModel>' })
+]])
+child_cmd("write " .. tmp .. "/copy.drawio.png")
+check(
+  wait_for(function()
+    return #export_tokens() == 5
+  end),
+  ":w <other>.drawio.png renders a copy"
+)
+local png5 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-5\12\13\14", 64)
+post_export_result(png5, export_tokens()[5])
+check(
+  wait_for(function()
+    return read_file(tmp .. "/copy.drawio.png") == png5
+  end),
+  "the copy lands at the written path"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "writing a copy does not clear the buffer's modified flag")
+
+-- Edits typed while an export is in flight cover a newer revision than the
+-- render; they must keep their 'modified' flag when the result lands.
+child_cmd("write")
+check(
+  wait_for(function()
+    return #export_tokens() == 6
+  end),
+  ":w after the copy still exports the buffer's own file"
+)
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- MID-FLIGHT-EDIT --></mxGraphModel>' })
+]])
+local png6 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-6\15\16\17", 64)
+post_export_result(png6, export_tokens()[6])
+check(
+  wait_for(function()
+    return read_file(editable_png) == png6
+  end),
+  "the in-flight export still writes its PNG"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "edits made during an in-flight export keep the modified flag")
+
 -- A .drawio.png whose XML we cannot read must open locked, not writable.
 local opaque_png = tmp .. "/plain.drawio.png"
 local opf = assert(io.open(opaque_png, "wb"))
@@ -461,13 +542,13 @@ child_cmd("buffer " .. buf1)
 -- ---------------------------------------------------------------------------
 
 local function layout_msgs()
-  local msgs = {}
+  local found = {}
   for _, m in ipairs(sse_messages()) do
     if m.type == "layout" then
-      msgs[#msgs + 1] = m
+      found[#found + 1] = m
     end
   end
-  return msgs
+  return found
 end
 
 -- An unknown layout name is refused before anything is sent.
@@ -489,8 +570,17 @@ check(
   "layout request carries the mapped layout class and a token"
 )
 
--- The bridge answers with laid-out XML; Neovim writes it to the buffer.
-local laid_out = '<mxGraphModel><root><mxCell id="0"/></root><!-- LAID-OUT --></mxGraphModel>'
+-- An unknown/stale token must be ignored outright.
+post_json("/layout-result", { xml = "<mxGraphModel><!-- FORGED --></mxGraphModel>", token = "not-a-layout-token" })
+vim.wait(300)
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
+  "an unknown layout token is ignored"
+)
+
+-- The bridge answers with laid-out XML (multi-line, as draw.io produces);
+-- Neovim writes it to the buffer.
+local laid_out = '<mxGraphModel>\n  <root><mxCell id="0"/></root><!-- LAID-OUT -->\n</mxGraphModel>'
 check(post_json("/layout-result", { xml = laid_out, token = layout_msg.token }) == 200, "bridge can POST laid-out XML")
 check(
   wait_for(function()
@@ -519,6 +609,23 @@ vim.wait(300)
 check(
   child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == pre_layout_xml,
   "a failed layout leaves the buffer untouched"
+)
+
+-- Keystrokes typed while a layout is in flight must win over the stale result.
+child_cmd("DrawioLayout organic")
+check(
+  wait_for(function()
+    return #layout_msgs() == 3
+  end),
+  "a third layout request goes out"
+)
+local mid_edit = '<mxGraphModel><root><mxCell id="0"/></root><!-- MID-LAYOUT-EDIT --></mxGraphModel>'
+child_lua(([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { %q })]]):format(mid_edit))
+post_json("/layout-result", { xml = laid_out, token = layout_msgs()[3].token })
+vim.wait(300)
+check(
+  child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]]) == mid_edit,
+  "a stale layout result does not overwrite newer edits"
 )
 
 -- ---------------------------------------------------------------------------
@@ -558,21 +665,21 @@ check(
 -- :DrawioLayout must refuse: its result is XML, not Mermaid.
 child_cmd("DrawioLayout tree")
 vim.wait(200)
-check(#layout_msgs() == 2, ":DrawioLayout refuses CSV/Mermaid sources")
+check(#layout_msgs() == 3, ":DrawioLayout refuses CSV/Mermaid sources")
 
 -- Exports go through the usual round trip, onto <name>.drawio.png.
 child_cmd("DrawioExport")
 check(
   wait_for(function()
-    return #export_tokens() == 5
+    return #export_tokens() == 7
   end),
   ":DrawioExport works from a mermaid buffer"
 )
-local png5 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-5\12\13\14", 64)
-post_export_result(png5, export_tokens()[5])
+local png7 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-7\12\13\14", 64)
+post_export_result(png7, export_tokens()[7])
 check(
   wait_for(function()
-    return read_file(mermaid_file .. ".drawio.png") == png5
+    return read_file(mermaid_file .. ".drawio.png") == png7
   end),
   "the mermaid buffer exports to <name>.drawio.png"
 )
@@ -604,10 +711,10 @@ child_cmd("DrawioPreview")
 child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
 child_cmd("write")
 vim.wait(500)
-check(#export_tokens() == 5, "saving a non-XML buffer does not broadcast an export request")
+check(#export_tokens() == 7, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
-check(warn_messages:find("skipped PNG export", 1, true) ~= nil, "skipped export warns the user")
+check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")
 
 -- ---------------------------------------------------------------------------
 -- :DrawioStop

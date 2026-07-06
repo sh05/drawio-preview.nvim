@@ -54,13 +54,20 @@ end
 --- blank iframe, browser = {} tries to execute the URL, debounce_ms = -1
 --- reaches timer:start, port = 99999 only fails at bind()).
 local function validate(options, opts)
-  if not options.drawio_url:match("^https?://") then
+  -- URL schemes are case-insensitive (RFC 3986).
+  if not options.drawio_url:lower():match("^https?://") then
     fail("drawio_url must start with http:// or https:// (got %q)", options.drawio_url)
   end
   -- The value is templated into the bridge page's src="..." attribute
   -- unescaped; reject anything that cannot appear in an origin.
   if options.drawio_url:match("[%s\"'<>\\]") then
     fail("drawio_url must not contain spaces or quote characters (got %q)", options.drawio_url)
+  end
+  -- NaN would slip through the range comparisons below (NaN < 0 is false).
+  for _, key in ipairs({ "port", "debounce_ms", "export_scale", "export_timeout_ms" }) do
+    if options[key] ~= options[key] then
+      fail("%s must not be NaN", key)
+    end
   end
   if options.port % 1 ~= 0 or options.port < 0 or options.port > 65535 then
     fail("port must be an integer in 0..65535 (got %s)", tostring(options.port))

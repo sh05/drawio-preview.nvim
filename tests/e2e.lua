@@ -242,8 +242,8 @@ check(
 )
 
 --- POST a fake rendered PNG back, the way the bridge page does.
-local function post_export_result(png_bytes, token)
-  local body = vim.json.encode({ png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = token })
+local function post_export_result(png_bytes, export_token)
+  local body = vim.json.encode({ png = "data:image/png;base64," .. vim.base64.encode(png_bytes), token = export_token })
   local body_file = tmp .. "/post-body.json"
   local bf = assert(io.open(body_file, "wb"))
   bf:write(body)

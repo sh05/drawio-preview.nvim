@@ -207,9 +207,40 @@ server.max_export_body = 64 * 1024 * 1024
 r = curl({ "-X", "GET", "--data", "x", base .. "/" .. auth })
 check(r and r.code == 413, "a body on a body-less route is refused with 413")
 
+-- An *established* SSE stream must be exempt from the idle reaper: its
+-- request completed (disarm runs before handle_request re-arms the read),
+-- so it may sit quietly between pushes for arbitrarily long.
+server.idle_timeout_ms = 150
+local sse2_file = vim.fn.tempname()
+local sse2_proc = vim.system({ "curl", "-sN", "-o", sse2_file, "--max-time", "30", base .. "/events" .. auth })
+check(
+  wait_for(function()
+    return server.client_count() == 1
+  end),
+  "SSE client connects under a tight idle timeout"
+)
+vim.wait(500) -- well past idle_timeout_ms
+server.broadcast({ type = "load", xml = "<idle/>" })
+check(
+  wait_for(function()
+    local f2 = io.open(sse2_file, "rb")
+    if not f2 then
+      return false
+    end
+    local text = f2:read("*a")
+    f2:close()
+    return text:find("<idle/>", 1, true) ~= nil
+  end),
+  "established SSE stream survives the idle reaper"
+)
+sse2_proc:kill(9)
+wait_for(function()
+  return server.client_count() == 0
+end)
+os.remove(sse2_file)
+
 -- Connections that make no progress (half-open sockets, bodies that never
 -- complete) are reaped by the idle timer instead of parking in memory.
-server.idle_timeout_ms = 150
 local reaped = false
 local idle_sock = uv.new_tcp()
 idle_sock:connect("127.0.0.1", port, function(cerr)

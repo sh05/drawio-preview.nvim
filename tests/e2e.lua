@@ -412,13 +412,131 @@ check(count_msgs(function(m)
 end) == 0, "a pending debounce for the old buffer dies when the pin moves")
 
 -- ---------------------------------------------------------------------------
+-- .drawio.png buffers: read the embedded XML, :w re-renders through export
+-- ---------------------------------------------------------------------------
+
+local function be32(n)
+  return string.char(math.floor(n / 16777216) % 256, math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256)
+end
+local function png_chunk(ctype, data)
+  return be32(#data) .. ctype .. data .. "\0\0\0\0" -- CRC is not validated by the reader
+end
+
+local roundtrip_xml = '<mxGraphModel><root><mxCell id="0"/></root><!-- FROM-PNG --></mxGraphModel>'
+local encoded_xml = roundtrip_xml:gsub("[^%w%-%.~_]", function(c)
+  return ("%%%02X"):format(c:byte())
+end)
+local editable_png = tmp .. "/embedded.drawio.png"
+local pf = assert(io.open(editable_png, "wb"))
+pf:write(
+  "\137PNG\r\n\26\n"
+    .. png_chunk("IHDR", string.rep("\0", 13))
+    .. png_chunk("tEXt", "mxfile\0" .. encoded_xml)
+    .. png_chunk("IEND", "")
+)
+pf:close()
+
+child_cmd("edit " .. editable_png)
+local png_buf_content = child_lua([[return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")]])
+check(png_buf_content == roundtrip_xml, "opening a .drawio.png loads the embedded XML")
+check(child_lua([[return vim.bo.filetype]]) == "drawio", ".drawio.png buffer gets the drawio filetype")
+check(child_lua([[return vim.bo.modified]]) == false, "freshly read .drawio.png buffer is unmodified")
+
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- PNG-EDIT --></mxGraphModel>' })
+]])
+child_cmd("write")
+check(
+  wait_for(function()
+    return #export_tokens() == 4
+  end),
+  ":w on a .drawio.png requests a render"
+)
+check(child_lua([[return vim.bo.modified]]) == true, "buffer stays modified until the PNG is on disk")
+
+local png4 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-4\9\10\11", 64)
+post_export_result(png4, export_tokens()[4])
+check(
+  wait_for(function()
+    return read_file(editable_png) == png4
+  end),
+  ":w replaces the .drawio.png in place (no extra .png suffix)"
+)
+check(
+  wait_for(function()
+    return child_lua([[return vim.bo.modified]]) == false
+  end),
+  "modified flag clears once the PNG is written"
+)
+
+-- :w to a *different* .drawio.png is a copy, not a save of this buffer's
+-- file: the copy is written but 'modified' must survive.
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- PNG-EDIT-2 --></mxGraphModel>' })
+]])
+child_cmd("write " .. tmp .. "/copy.drawio.png")
+check(
+  wait_for(function()
+    return #export_tokens() == 5
+  end),
+  ":w <other>.drawio.png renders a copy"
+)
+local png5 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-5\12\13\14", 64)
+post_export_result(png5, export_tokens()[5])
+check(
+  wait_for(function()
+    return read_file(tmp .. "/copy.drawio.png") == png5
+  end),
+  "the copy lands at the written path"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "writing a copy does not clear the buffer's modified flag")
+
+-- Edits typed while an export is in flight cover a newer revision than the
+-- render; they must keep their 'modified' flag when the result lands.
+child_cmd("write")
+check(
+  wait_for(function()
+    return #export_tokens() == 6
+  end),
+  ":w after the copy still exports the buffer's own file"
+)
+child_lua([[
+  vim.api.nvim_buf_set_lines(0, 0, -1, false,
+    { '<mxGraphModel><root><mxCell id="0"/></root><!-- MID-FLIGHT-EDIT --></mxGraphModel>' })
+]])
+local png6 = "\137PNG\r\n\26\n" .. string.rep("fake-png-payload-6\15\16\17", 64)
+post_export_result(png6, export_tokens()[6])
+check(
+  wait_for(function()
+    return read_file(editable_png) == png6
+  end),
+  "the in-flight export still writes its PNG"
+)
+vim.wait(200)
+check(child_lua([[return vim.bo.modified]]) == true, "edits made during an in-flight export keep the modified flag")
+
+-- A .drawio.png whose XML we cannot read must open locked, not writable.
+local opaque_png = tmp .. "/plain.drawio.png"
+local opf = assert(io.open(opaque_png, "wb"))
+opf:write("\137PNG\r\n\26\n" .. png_chunk("IHDR", string.rep("\0", 13)) .. png_chunk("IEND", ""))
+opf:close()
+pcall(child_cmd, "edit " .. opaque_png) -- the ERROR notify propagates through RPC; the read itself succeeds
+check(child_lua([[return vim.bo.modifiable]]) == false, "a PNG without embedded XML opens non-modifiable")
+
+-- Back to the followed buffer for the remaining checks.
+child_cmd("buffer " .. buf1)
+
+-- ---------------------------------------------------------------------------
 -- non-XML buffer: the export must be skipped, never rendered stale
 -- ---------------------------------------------------------------------------
 
 child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
 child_cmd("write")
 vim.wait(500)
-check(#export_tokens() == 3, "saving a non-XML buffer does not broadcast an export request")
+check(#export_tokens() == 6, "saving a non-XML buffer does not broadcast an export request")
 check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
 local warn_messages = child_lua([[return vim.fn.execute("messages")]])
 check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")

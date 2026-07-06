@@ -13,6 +13,7 @@ vim.opt.rtp:prepend(root)
 
 local server = require("drawio.server")
 local config = require("drawio.config")
+local png = require("drawio.png")
 local uv = vim.uv or vim.loop
 
 local checks, failures = 0, 0
@@ -312,6 +313,43 @@ check(not pcall(config.setup, { debounce_ms = 0 / 0 }), "NaN debounce_ms is reje
 check(pcall(config.setup, { drawio_url = "HTTP://localhost:8080" }), "uppercase URL scheme is accepted")
 check(pcall(config.setup, { port = 65535, debounce_ms = 0, browser = { "true" } }), "boundary values are accepted")
 config.setup({})
+
+-- ---------------------------------------------------------------------------
+-- png.extract_xml: the editable-PNG (tEXt mxfile) reader
+-- ---------------------------------------------------------------------------
+
+local function be32(n)
+  return string.char(math.floor(n / 16777216) % 256, math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256)
+end
+local function png_chunk(ctype, data)
+  return be32(#data) .. ctype .. data .. "\0\0\0\0" -- CRC is not validated
+end
+local SIG = "\137PNG\r\n\26\n"
+local IHDR = png_chunk("IHDR", string.rep("\0", 13))
+
+local xml = '<mxfile><diagram name="a&b">x < y</diagram></mxfile>'
+local encoded = xml:gsub("[^%w%-%.~_]", function(c)
+  return ("%%%02X"):format(c:byte())
+end)
+
+local got = png.extract_xml(SIG .. IHDR .. png_chunk("tEXt", "mxfile\0" .. encoded) .. png_chunk("IEND", ""))
+check(got == xml, "extract_xml URL-decodes the tEXt mxfile payload")
+
+local g2, e2 = png.extract_xml(SIG .. IHDR .. png_chunk("IEND", ""))
+check(g2 == nil and e2:find("no embedded", 1, true) ~= nil, "PNG without an mxfile chunk is reported")
+
+local g3, e3 = png.extract_xml("GIF89a not a png")
+check(g3 == nil and e3:find("not a PNG", 1, true) ~= nil, "non-PNG bytes are reported")
+
+local g4, e4 = png.extract_xml(SIG .. IHDR .. png_chunk("zTXt", "mxfile\0\0zlib") .. png_chunk("IEND", ""))
+check(g4 == nil and e4:find("compressed", 1, true) ~= nil, "compressed (zTXt) payloads are reported, not garbled")
+
+local g5 = png.extract_xml(SIG .. IHDR .. png_chunk("tEXt", "Comment\0hi") .. png_chunk("tEXt", "mxfile\0" .. encoded))
+check(g5 == xml, "other tEXt chunks are skipped on the way to mxfile")
+
+local truncated = (SIG .. IHDR .. png_chunk("tEXt", "mxfile\0" .. encoded)):sub(1, #SIG + #IHDR + 20)
+local g6, e6 = png.extract_xml(truncated)
+check(g6 == nil and e6 ~= nil, "a truncated mxfile chunk is rejected, not returned partially")
 
 print(("---\n%d checks, %d failures"):format(checks, failures))
 os.exit(failures > 0 and 1 or 0)

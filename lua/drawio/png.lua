@@ -29,6 +29,9 @@ function M.extract_xml(data)
   while pos + 8 <= #data do
     local len = be32(data, pos)
     local ctype = data:sub(pos + 4, pos + 7)
+    if pos + 11 + len > #data then
+      break -- truncated chunk: better "no XML found" than a partial diagram
+    end
     local body = data:sub(pos + 8, pos + 7 + len)
     if ctype == "tEXt" then
       local key, text = body:match("^([^%z]+)%z(.*)$")

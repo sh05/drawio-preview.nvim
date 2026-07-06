@@ -11,7 +11,8 @@ CONTENTS                                                      *drawio-preview*
   3. Commands ..................... |drawio-preview-commands|
   4. Configuration ................ |drawio-preview-configuration|
   5. Editing .drawio.png files .... |drawio-preview-png-editing|
-  6. Limitations .................. |drawio-preview-limitations|
+  6. CSV / Mermaid sources ........ |drawio-preview-csv-mermaid|
+  7. Limitations .................. |drawio-preview-limitations|
 
 ==============================================================================
 1. INTRODUCTION                                         *drawio-preview-intro*
@@ -110,7 +111,23 @@ is compressed (zTXt) or missing open non-modifiable so a save cannot
 destroy them.
 
 ==============================================================================
-6. LIMITATIONS                                    *drawio-preview-limitations*
+6. CSV / MERMAID SOURCES                          *drawio-preview-csv-mermaid*
+
+`.csv` and `.mmd` / `.mermaid` buffers can be previewed and exported like
+any diagram: run |:DrawioPreview| in the buffer and draw.io converts the
+text on the fly; |:w| / |:DrawioExport| writes `<name>.drawio.png` next to
+it. CSV uses draw.io's insert-from-CSV format (`# label:`, `# style:` ...
+directives followed by data rows); Mermaid uses standard Mermaid syntax.
+|:DrawioLayout| is unavailable for these buffers, since its result is
+mxGraph XML.
+
+The conversion happens inside draw.io: when the text has syntax errors,
+the editor keeps its last successful conversion, and an export taken at
+that moment renders that older diagram. Check the preview before trusting
+an exported PNG of a CSV/Mermaid source.
+
+==============================================================================
+7. LIMITATIONS                                    *drawio-preview-limitations*
 
 - One preview per Neovim instance, pinned to one buffer at a time:
   |:DrawioPreview| (re)pins it to the current buffer, and only the pinned

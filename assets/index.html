@@ -32,7 +32,7 @@
   var auth = '?t=' + encodeURIComponent(token);
   var statusEl = document.getElementById('status');
   var ready = false;        // draw.io sent {event:'init'}
-  var lastXml = null;       // most recent XML from Neovim
+  var lastLoad = null;      // most recent load message from Neovim
   var pendingExports = [];  // export requests queued before init
 
   function flash(text, sticky) {
@@ -48,7 +48,14 @@
     frame.contentWindow.postMessage(JSON.stringify(msg), drawioOrigin);
   }
 
-  function loadXml(xml) {
+  function applyLoad(m) {
+    // CSV / Mermaid sources are converted by draw.io itself via the
+    // format descriptor; everything else is loaded as XML.
+    if (m.format && m.data && m.data.trim()) {
+      post({ action: 'load', descriptor: { format: m.format, data: m.data } });
+      return;
+    }
+    var xml = m.xml;
     // Empty buffers would make the editor pop a dialog; show a blank page.
     if (!xml || !xml.trim()) {
       xml = '<mxGraphModel><root><mxCell id="0"/>' +
@@ -61,7 +68,7 @@
   // a bare <mxGraphModel>, unwrap it again so :DrawioLayout hands back the
   // same document type it was given. wantModel is decided when the layout
   // is *requested*, not when the export event arrives — by then another
-  // buffer's push may have rewritten lastXml. Returns null when the
+  // buffer's push may have rewritten lastLoad. Returns null when the
   // diagram payload is not plain XML (e.g. compressed), which Neovim
   // reports to the user.
   function unwrapForBuffer(xmlStr, wantModel) {
@@ -89,7 +96,7 @@
 
     if (msg.event === 'init') {
       ready = true;
-      if (lastXml !== null) loadXml(lastXml);
+      if (lastLoad !== null) applyLoad(lastLoad);
       while (pendingExports.length) post(pendingExports.shift());
     } else if (msg.event === 'export') {
       // msg.message echoes back what we sent, including our token.
@@ -139,8 +146,8 @@
     try { m = JSON.parse(e.data); } catch (_) { return; }
 
     if (m.type === 'load') {
-      lastXml = m.xml;
-      if (ready) loadXml(m.xml);
+      lastLoad = m;
+      if (ready) applyLoad(m);
     } else if (m.type === 'export') {
       var req = {
         action: 'export',
@@ -152,13 +159,13 @@
     } else if (m.type === 'layout') {
       // Run the layout, then export the result as XML; the export event
       // above routes it back through /layout-result via message.kind.
-      // lastXml is the layout target here (Neovim pushes it right before
+      // lastLoad is the layout target here (Neovim pushes it right before
       // this message), so the document type is captured now.
       var reqs = [
         { action: 'layout', layouts: [{ layout: m.layout }] },
         { action: 'export', format: 'xml',
           message: { token: m.token, kind: 'layout',
-                     wantModel: /^\s*<mxGraphModel/i.test(lastXml || '') } }
+                     wantModel: /^\s*<mxGraphModel/i.test((lastLoad && lastLoad.xml) || '') } }
       ];
       if (ready) reqs.forEach(post); else pendingExports.push.apply(pendingExports, reqs);
     } else if (m.type === 'bye') {

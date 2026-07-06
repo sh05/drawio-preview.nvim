@@ -263,13 +263,28 @@ function M.start(opts)
   M.on_sse_connect = opts.on_sse_connect
 
   M.server = uv.new_tcp()
-  local ok, err = pcall(M.server.bind, M.server, "127.0.0.1", opts.port or 0)
+  -- bind() fail-returns (nil, err) rather than throwing; ignoring it would
+  -- let the OS auto-bind the socket to 0.0.0.0 on a random port at
+  -- listen() time. And EADDRINUSE specifically is deferred by libuv to
+  -- listen() (delayed_error), so both calls must be checked.
+  local bok, berr = M.server:bind("127.0.0.1", opts.port or 0)
+  local ok, err = bok == 0, berr
+  if ok then
+    local lok, lerr = M.server:listen(128, on_connection)
+    ok, err = lok == 0, lerr
+  end
   if not ok then
     M.server:close()
     M.server = nil
-    error("[drawio] failed to bind 127.0.0.1:" .. tostring(opts.port) .. " (" .. tostring(err) .. ")")
+    error(
+      "[drawio] failed to bind 127.0.0.1:"
+        .. tostring(opts.port)
+        .. " ("
+        .. tostring(err)
+        .. ") — pick another port or set port = 0",
+      0
+    )
   end
-  M.server:listen(128, on_connection)
   M.port = M.server:getsockname().port
   return M.port
 end

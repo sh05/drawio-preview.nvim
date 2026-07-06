@@ -296,6 +296,18 @@ check(
 )
 
 -- ---------------------------------------------------------------------------
+-- non-XML buffer: the export must be skipped, never rendered stale
+-- ---------------------------------------------------------------------------
+
+child_lua([[vim.api.nvim_buf_set_lines(0, 0, -1, false, { "not xml at all" })]])
+child_cmd("write")
+vim.wait(500)
+check(#export_tokens() == 2, "saving a non-XML buffer does not broadcast an export request")
+check(read_file(png_file) == png2, "PNG on disk is left untouched when the export is skipped")
+local warn_messages = child_lua([[return vim.fn.execute("messages")]])
+check(warn_messages:find("not valid XML", 1, true) ~= nil, "skipped export warns the user")
+
+-- ---------------------------------------------------------------------------
 -- :DrawioStop
 -- ---------------------------------------------------------------------------
 
@@ -319,6 +331,11 @@ check(
   "no stray [drawio] warnings after :DrawioStop",
   messages
 )
+
+-- A second :DrawioStop is a no-op and must say so.
+child_cmd("DrawioStop")
+messages = child_lua([[return vim.fn.execute("messages")]])
+check(messages:find("preview not running", 1, true) ~= nil, ":DrawioStop with nothing running says so")
 
 -- ---------------------------------------------------------------------------
 -- cleanup

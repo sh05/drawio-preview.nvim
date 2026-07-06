@@ -35,7 +35,7 @@ end
 local function load_html()
   local path = plugin_root() .. "/assets/index.html"
   if vim.fn.filereadable(path) ~= 1 then
-    error("[drawio] bridge page not found: " .. path)
+    error("[drawio] bridge page not found: " .. path, 0)
   end
   local html = table.concat(vim.fn.readfile(path), "\n")
   return (html:gsub("{{DRAWIO_URL}}", function()
@@ -55,16 +55,20 @@ local function looks_like_xml(text)
   return first == "<"
 end
 
+--- Returns true when the buffer content was actually pushed; callers that
+--- are about to render (export) must not proceed on false, or the editor
+--- would render whatever XML it had before.
 local function push_now(buf)
   if not vim.api.nvim_buf_is_valid(buf) then
-    return
+    return false
   end
   local xml = buffer_xml(buf)
   if not looks_like_xml(xml) and xml:match("%S") then
-    return -- non-empty but clearly not XML yet; wait for more typing
+    return false -- non-empty but clearly not XML yet; wait for more typing
   end
   state.last_xml = xml
   server.broadcast({ type = "load", xml = xml })
+  return true
 end
 
 local function schedule_push(buf)
@@ -96,8 +100,14 @@ local function request_export(buf, srcfile)
     vim.notify("[drawio] no preview connected; skipped PNG export (run :DrawioPreview)", vim.log.levels.WARN)
     return
   end
-  -- Make sure the editor has the latest buffer before rendering.
-  push_now(buf)
+  -- Make sure the editor has the latest buffer before rendering. If the
+  -- buffer cannot be pushed, exporting would silently write a PNG of the
+  -- *previous* revision next to the just-saved source — refuse instead:
+  -- the PNG on disk either matches the source or is not written at all.
+  if not push_now(buf) then
+    vim.notify("[drawio] buffer is not valid XML; skipped PNG export", vim.log.levels.WARN)
+    return
+  end
 
   -- Sequence for uniqueness within the session (tostring of a large
   -- hrtime double rounds to 14 digits, so hrtime alone can collide on
@@ -263,12 +273,32 @@ end
 
 function M.preview()
   local buf = vim.api.nvim_get_current_buf()
-  local port = server.start({
-    port = config.options.port,
-    html = load_html(),
-    on_post = on_post,
-    on_sse_connect = on_sse_connect,
-  })
+  local was_running = server.is_running()
+  local ok, port = pcall(function()
+    return server.start({
+      port = config.options.port,
+      html = load_html(),
+      on_post = on_post,
+      on_sse_connect = on_sse_connect,
+    })
+  end)
+  if not ok then
+    -- A used port or a broken plugin install must not dump a stack trace
+    -- out of the user command.
+    vim.notify(tostring(port), vim.log.levels.ERROR)
+    return
+  end
+  -- A running server keeps its socket; a changed `port` in setup() would
+  -- otherwise be ignored without a word.
+  if was_running and config.options.port ~= 0 and config.options.port ~= port then
+    vim.notify(
+      ("[drawio] server already running on port %d; port = %d applies after :DrawioStop"):format(
+        port,
+        config.options.port
+      ),
+      vim.log.levels.WARN
+    )
+  end
   M.attach(buf)
   push_now(buf) -- prime last_xml so a connecting page renders immediately
   local url = "http://127.0.0.1:" .. port .. "/"
@@ -292,6 +322,10 @@ function M.export()
 end
 
 function M.stop()
+  if not server.is_running() then
+    vim.notify("[drawio] preview not running")
+    return
+  end
   if state.timer then
     state.timer:stop()
     state.timer:close()

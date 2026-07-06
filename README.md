@@ -89,16 +89,20 @@ Defaults shown:
 
 ```lua
 require("drawio").setup({
-  port = 0,                                  -- 0 = pick a free port
-  drawio_url = "https://embed.diagrams.net", -- or a self-hosted instance (offline use)
-  debounce_ms = 500,                         -- delay before pushing buffer changes
+  port = 0,                                  -- 0 = pick a free port (integer 0..65535)
+  drawio_url = "https://embed.diagrams.net", -- must be http(s)://; self-hosted works (offline use)
+  debounce_ms = 500,                         -- delay (ms, >= 0) before pushing buffer changes
   export_on_write = true,                    -- write .drawio.png on :w
-  export_scale = 2,                          -- PNG resolution multiplier
-  export_timeout_ms = 30000,                 -- how long to wait for the rendered PNG
+  export_scale = 2,                          -- PNG resolution multiplier (> 0)
+  export_timeout_ms = 30000,                 -- how long (ms, > 0) to wait for the rendered PNG
   browser = nil,                             -- nil = system default browser
-  -- browser = { "google-chrome", "--app" }, -- chromeless app window
+  -- browser = { "google-chrome", "--app" }, -- non-empty list of args; chromeless app window
 })
 ```
+
+`setup()` rejects invalid values (wrong types, out-of-range numbers, a
+schemeless `drawio_url`, an empty `browser` list) immediately rather than
+letting them fail later in obscure ways.
 
 ### Offline / self-hosted
 

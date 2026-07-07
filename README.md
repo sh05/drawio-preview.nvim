@@ -20,6 +20,8 @@ Neovim buffer (XML) --debounce--> local HTTP/SSE server --> browser
                                                              └ embedded draw.io editor (chromeless)
 :w  --> .drawio written by Neovim as usual
     --> export request --> browser renders PNG --> POSTed back --> .drawio.png
+:DrawioLayout --> layout request --> browser lays the diagram out
+    --> XML POSTed back --> buffer rewritten (the one exception, one undo step)
 ```
 
 No draw.io CLI, no Electron, no headless Chromium. Rendering and PNG export
@@ -41,7 +43,7 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
   "sh05/drawio-preview.nvim",
   main = "drawio", -- lua module name (differs from the repo name)
   ft = "drawio",
-  cmd = { "DrawioPreview", "DrawioExport", "DrawioStop" },
+  cmd = { "DrawioPreview", "DrawioExport", "DrawioStop", "DrawioLayout" },
   opts = {},
 }
 ```
@@ -146,7 +148,8 @@ buffered, and connections that stop making progress are closed after 30 s.
   buffer — the preview briefly shows that buffer while it renders, then
   returns to the pinned one.
 - After `:DrawioStop` the browser tab shows "preview stopped"; start again
-  with `:DrawioPreview` (the page must be reopened — the port may change).
+  with `:DrawioPreview` (the page must be reopened — the port and the auth
+  token change).
 - Files not named `*.drawio` keep their extension in the export:
   `foo.xml` exports to `foo.xml.drawio.png`.
 

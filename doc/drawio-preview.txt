@@ -24,7 +24,9 @@ browser. On |:w| both the `.drawio` source and a re-editable `.drawio.png`
 
 Data flow is strictly one-way: the Neovim buffer is the single source of
 truth. Nothing from the browser ever flows back into the buffer; only the
-exported PNG comes back, written to disk.
+exported PNG comes back, written to disk. The one exception is the explicit
+|:DrawioLayout| command, which rewrites the buffer on request — undoable in
+a single step.
 
 ==============================================================================
 2. REQUIREMENTS                                  *drawio-preview-requirements*
@@ -135,7 +137,7 @@ an exported PNG of a CSV/Mermaid source.
   attached buffer (the preview briefly shows that buffer while it renders,
   then returns to the pinned one).
 - After |:DrawioStop| the browser page must be reopened via
-  |:DrawioPreview| (the port may change between runs).
+  |:DrawioPreview| (the port and the auth token change between runs).
 - Files not named `*.drawio` keep their extension in the exported name:
   `foo.xml` exports to `foo.xml.drawio.png`.
 

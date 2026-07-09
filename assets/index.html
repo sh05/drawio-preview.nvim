@@ -149,11 +149,14 @@
       lastLoad = m;
       if (ready) applyLoad(m);
     } else if (m.type === 'export') {
+      // draw.io echoes the *entire request object* back as msg.message on
+      // the export event, so custom fields must sit at the top level of
+      // the request; the token then comes back as msg.message.token.
       var req = {
         action: 'export',
         format: 'xmlpng',
         scale: m.scale || 1,
-        message: { token: m.token }
+        token: m.token
       };
       if (ready) post(req); else pendingExports.push(req);
     } else if (m.type === 'layout') {
@@ -164,8 +167,8 @@
       var reqs = [
         { action: 'layout', layouts: [{ layout: m.layout }] },
         { action: 'export', format: 'xml',
-          message: { token: m.token, kind: 'layout',
-                     wantModel: /^\s*<mxGraphModel/i.test((lastLoad && lastLoad.xml) || '') } }
+          token: m.token, kind: 'layout',
+          wantModel: /^\s*<mxGraphModel/i.test((lastLoad && lastLoad.xml) || '') }
       ];
       if (ready) reqs.forEach(post); else pendingExports.push.apply(pendingExports, reqs);
     } else if (m.type === 'bye') {
